@@ -2402,7 +2402,6 @@ static NTSTATUS runtime_start_wow64( void *module, void *entry,
 }
 #endif
 
-#ifdef WINE_NX_AMD64
 static NTSTATUS runtime_create_registry_path( const char *path, HANDLE *key )
 {
     WCHAR key_name[256];
@@ -2443,6 +2442,37 @@ static NTSTATUS runtime_create_registry_path( const char *path, HANDLE *key )
     return STATUS_OBJECT_PATH_SYNTAX_BAD;
 }
 
+static NTSTATUS runtime_prepare_prince_of_persia( const char *target )
+{
+    static const struct { const char *name; ULONG value; } settings[] = {
+        { "ScreenResolutionWidth", WINE_NX_FB_W },
+        { "ScreenResolutionHeight", WINE_NX_FB_H }
+    };
+    const char *name = path_basename( target );
+    WCHAR buffer[32];
+    UNICODE_STRING value = { .MaximumLength = sizeof(buffer), .Buffer = buffer };
+    HANDLE key;
+    NTSTATUS status;
+
+    if (strcasecmp( name, "PrinceOfPersia_Launcher.exe" ) &&
+        strcasecmp( name, "Prince of Persia.exe" )) return STATUS_SUCCESS;
+    status = runtime_create_registry_path(
+        "\\Registry\\User\\S-1-5-21-0-0-0-1000\\Software\\Ubisoft\\Prince of Persia\\1.0\\Engine", &key );
+    if (status) return status;
+    for (unsigned int i = 0; i < ARRAY_SIZE(settings); i++)
+    {
+        size_t length = strlen( settings[i].name );
+        for (size_t j = 0; j <= length; j++) buffer[j] = settings[i].name[j];
+        value.Length = length * sizeof(WCHAR);
+        status = NtSetValueKey( key, &value, 0, REG_DWORD, &settings[i].value, sizeof(settings[i].value) );
+        if (status) break;
+    }
+    NtClose( key );
+    if (!status) log_line( "[COMPAT] Prince of Persia: resolution %ux%u", settings[0].value, settings[1].value );
+    return status;
+}
+
+#ifdef WINE_NX_AMD64
 static NTSTATUS runtime_prepare_arm64ec(void)
 {
     static const char key_path[] = "\\Registry\\Machine\\Software\\Microsoft\\Wow64\\amd64";
@@ -4073,6 +4103,8 @@ int main( int argc, char **argv )
         log_line( "[FAIL] startup compatibility status=%08x", status );
         park_forever();
     }
+    if ((status = runtime_prepare_prince_of_persia( target )))
+        log_line( "[WARN] Prince of Persia resolution setup status=%08x", status );
     /* Upstream's start_main_thread does this; without it the PEB (and the
      * WoW64 PEB copied from it) reports zero processors to GetSystemInfo. */
     init_cpu_info();

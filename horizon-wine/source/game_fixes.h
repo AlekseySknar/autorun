@@ -48,6 +48,7 @@
 #define GAME_FIX_SETTINGS 16
 #define GAME_FIX_VERSIONS 4
 #define GAME_FIX_BUILDS   8
+#define GAME_FIX_ROWS     32
 
 struct game_fix_file
 {
@@ -70,6 +71,26 @@ struct game_fix_version
 {
     char key[32];
     char value[96];
+};
+
+/* A value in the game's own settings file, written by Autorun's game settings
+ * engine (game_settings.h) as a text row. */
+struct game_fix_row
+{
+    char section[64];
+    char key[64];
+    char initial[64];
+};
+
+/* The game's own settings file: where it is, as an install's destination,
+ * and what goes in it. */
+struct game_fix_settings_file
+{
+    char path[256];
+    int xml;
+    char initial_text[4096];
+    struct game_fix_row rows[GAME_FIX_ROWS];
+    unsigned int row_count;
 };
 
 struct game_fix_setting
@@ -107,6 +128,8 @@ struct game_fix
     unsigned int install_count;
     struct game_fix_setting settings[GAME_FIX_SETTINGS];
     unsigned int setting_count;
+    int has_game_settings;
+    struct game_fix_settings_file game_settings;
 };
 
 struct game_fixes_index
@@ -171,7 +194,9 @@ enum horizon_dlls_result game_fixes_download( const char *root, const struct hor
 int game_fixes_skip( const char *root, const char *exe_path, const struct game_fix *fix );
 /* Forget what the game has had of any fix, so the next start asks again. */
 int game_fixes_forget( const char *root, const char *exe_path );
-/* Apply the fix to the game: its files put in place and its settings into the
+/* Apply the fix to the game: its files put in place, its values into the
+ * game's own settings file -- unless Autorun has settings of its own for that
+ * game (game_settings_find), which are kept -- and its settings into the
  * game's. Returns 1 when its setup program is to run next, at setup (with its
  * arguments and running.txt written); 0 when the fix is applied and recorded;
  * -1 when it could not be, with why. The files must be ready. */

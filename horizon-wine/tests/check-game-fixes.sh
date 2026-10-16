@@ -16,7 +16,7 @@ trap 'rm -rf "$build"' EXIT HUP INT TERM
 clang -std=gnu11 -Wall -Wextra -Werror -Wno-deprecated-declarations -O1 -g \
     -fsanitize=address,undefined -fno-omit-frame-pointer -I "$horizon_wine/source" \
     -I/opt/homebrew/include "$horizon_wine/tests/game_fixes.c" "$horizon_wine/source/game_fixes.c" \
-    "$horizon_wine/source/horizon_dlls.c" -L/opt/homebrew/lib -lzstd -lz -o "$build/game_fixes"
+    "$horizon_wine/source/horizon_dlls.c" "$horizon_wine/source/game_settings.c" -L/opt/homebrew/lib -lzstd -lz -o "$build/game_fixes"
 mkdir -p "$build/card/sdmc:/switch/wine" "$build/served"
 # Wine's own programs stand in for a game: regedit.exe has a version resource,
 # notepad.exe none.

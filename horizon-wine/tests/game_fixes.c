@@ -163,7 +163,8 @@ int main( int argc, char **argv )
     static const char halo[] = DRIVE_C "/Halo/HALO.EXE";
     struct game_fixes_index index, fetched;
     const struct game_fix *fix;
-    char path[1024], setup[640], why[256], line[512], *text;
+    char path[1024], setup[640], why[256], line[512], war3_args[1024], *text;
+    unsigned int war3_version;
     unsigned int serial;
     int newer;
 
@@ -212,19 +213,25 @@ int main( int argc, char **argv )
     fetches = 0;
     CHECK( game_fixes_download( ROOT, &transport, fix, NULL, NULL ) == HORIZON_DLLS_OK && !fetches );
     CHECK( game_fixes_apply( ROOT, war3, fix, setup, sizeof(setup), why, sizeof(why) ) == 1 );
-    CHECK( !strcmp( setup, ROOT "/game-fixes/war3/war3-setup.exe" ) );
-    CHECK( (text = slurp( ROOT "/game-fixes/war3/war3-setup.args.txt", NULL )) );
+    /* Its setup and version are the repository's: read, not assumed. */
+    war3_version = fix->version;
+    snprintf( path, sizeof(path), ROOT "/game-fixes/war3/%s", fix->files[fix->run].name );
+    CHECK( !strcmp( setup, path ) );
+    snprintf( war3_args, sizeof(war3_args), "%.*s.args.txt", (int)(strlen( path ) - 4), path );
+    CHECK( (text = slurp( war3_args, NULL )) );
     CHECK( !strcmp( text, "\"C:\\WarCraft III\\war3.exe\"\n" ) );
     free( text );
     /* Not applied until the setup has ended. */
     CHECK( need_of( &index, war3 ) == GAME_FIX_NEW );
     CHECK( !game_fixes_finish( ROOT, DRIVE_C "/windows/autorun-setup.exe", 0, line, sizeof(line) ) );
     CHECK( game_fixes_finish( ROOT, setup, 0, line, sizeof(line) ) );
-    CHECK( strstr( line, "war3 1 for war3.exe applied" ) );
-    CHECK( access( ROOT "/" GAME_FIXES_RUNNING, F_OK ) && access( ROOT "/game-fixes/war3/war3-setup.args.txt", F_OK ) );
+    snprintf( path, sizeof(path), "war3 %u for war3.exe applied", war3_version );
+    CHECK( strstr( line, path ) );
+    CHECK( access( ROOT "/" GAME_FIXES_RUNNING, F_OK ) && access( war3_args, F_OK ) );
     CHECK( need_of( &index, war3 ) == GAME_FIX_APPLIED );
     CHECK( !game_fixes_finish( ROOT, setup, 0, line, sizeof(line) ) );
-    CHECK( (text = slurp( DRIVE_C "/WarCraft III/war3.wine-nx.txt", NULL )) && strstr( text, "game-fix=war3 1 0\n" ) );
+    snprintf( path, sizeof(path), "game-fix=war3 %u 0\n", war3_version );
+    CHECK( (text = slurp( DRIVE_C "/WarCraft III/war3.wine-nx.txt", NULL )) && strstr( text, path ) );
     free( text );
 
     /* A setup that reports a failed step is offered again. */
@@ -275,20 +282,24 @@ int main( int argc, char **argv )
 
     /* The repository raises WarCraft III's version and adds settings: the
      * card keeps the newer index, and the game is offered the update. */
-    serve_index( "\"version\": 1,\n   \"required\": true,\n   \"summary\": \"Sets the game's video",
-                 "\"version\": 2,\n   \"required\": true,\n   \"summary\": \"Sets the game's video", serial + 1 );
+    snprintf( path, sizeof(path), "\"version\": %u,\n   \"required\": true,\n   \"summary\": \"Sets the game's video",
+              war3_version );
+    snprintf( line, sizeof(line), "\"version\": %u,\n   \"required\": true,\n   \"summary\": \"Sets the game's video",
+              war3_version + 1 );
+    serve_index( path, line, serial + 1 );
     CHECK( game_fixes_fetch( ROOT, &transport, serial, &fetched, &newer, NULL, NULL ) == HORIZON_DLLS_OK && newer );
     game_fixes_free( &fetched );
     game_fixes_free( &index );
     CHECK( game_fixes_load( ROOT, &index ) == HORIZON_DLLS_OK && index.serial == serial + 1 );
-    CHECK( game_fixes_find( &index, "war3" )->version == 2 );
+    CHECK( game_fixes_find( &index, "war3" )->version == war3_version + 1 );
     CHECK( need_of( &index, war3 ) == GAME_FIX_UPDATE );
     /* Not asked again about this version, but about the next. */
     CHECK( game_fixes_skip( ROOT, war3, game_fixes_find( &index, "war3" ) ) );
     CHECK( need_of( &index, war3 ) == GAME_FIX_SKIPPED );
     game_fixes_free( &index );
-    serve_index( "\"version\": 1,\n   \"required\": true,\n   \"summary\": \"Sets the game's video",
-                 "\"version\": 3,\n   \"required\": true,\n   \"summary\": \"Sets the game's video", serial + 2 );
+    snprintf( line, sizeof(line), "\"version\": %u,\n   \"required\": true,\n   \"summary\": \"Sets the game's video",
+              war3_version + 2 );
+    serve_index( path, line, serial + 2 );
     CHECK( game_fixes_fetch( ROOT, &transport, serial + 1, &index, &newer, NULL, NULL ) == HORIZON_DLLS_OK && newer );
     CHECK( need_of( &index, war3 ) == GAME_FIX_UPDATE );
 
@@ -379,7 +390,60 @@ int main( int argc, char **argv )
         game_fixes_free( &index );
     }
 
+    /* The game's own settings file, through Autorun's game settings engine:
+     * made from initial_text when it is not there, every row written on every
+     * apply, and left alone for a game the engine has settings of its own for. */
+    {
+        static const char json[] =
+            "{\"schema\": 1, \"serial\": 1, \"fixes\": ["
+            "{\"id\": \"ini\", \"title\": \"I\", \"version\": 1, \"summary\": \"s\","
+            " \"match\": {\"exe\": [\"Game.exe\", \"FalloutNV.exe\"]},"
+            " \"game_settings\": {\"path\": \"{game}/Config/{stem}.ini\", \"format\": \"ini\","
+            " \"initial_text\": \"[Video]\\r\\nWidth=640\\r\\nGamma=2\\r\\n\","
+            " \"rows\": [{\"section\": \"Video\", \"key\": \"Width\", \"initial\": \"1280\"},"
+            "          {\"section\": \"Video\", \"key\": \"Height\", \"initial\": \"720\"}]}},"
+            "{\"id\": \"yaml\", \"title\": \"Y\", \"version\": 1, \"summary\": \"s\", \"match\": {\"exe\": [\"y.exe\"]},"
+            " \"game_settings\": {\"path\": \"{game}/y.ini\", \"format\": \"yaml\","
+            " \"rows\": [{\"section\": \"A\", \"key\": \"B\", \"initial\": \"C\"}]}},"
+            "{\"id\": \"norow\", \"title\": \"N\", \"version\": 1, \"summary\": \"s\", \"match\": {\"exe\": [\"n.exe\"]},"
+            " \"game_settings\": {\"path\": \"{game}/n.ini\", \"rows\": [{\"section\": \"A\", \"key\": \"B\"}]}}]}";
+        struct game_fixes_index own;
+        char big[9000], *at;
+
+        CHECK( game_fixes_parse( json, strlen( json ), &own ) == HORIZON_DLLS_OK );
+        CHECK( own.count == 1 && own.skipped == 2 && own.fixes[0].game_settings.row_count == 2 );
+        put( DRIVE_C "/Ini/Game.exe", "MZ" );
+        CHECK( (fix = game_fixes_match( &own, DRIVE_C "/Ini/Game.exe" )) );
+        CHECK( game_fixes_apply( ROOT, DRIVE_C "/Ini/Game.exe", fix, setup, sizeof(setup), why, sizeof(why) ) == 0 );
+        CHECK( (text = slurp( DRIVE_C "/Ini/Config/Game.ini", NULL )) );
+        CHECK( strstr( text, "Width=1280" ) && strstr( text, "Height=720" ) && strstr( text, "Gamma=2" ) );
+        CHECK( !strstr( text, "Width=640" ) );
+        free( text );
+        /* The player's change goes, and comes back with the next apply. */
+        put( DRIVE_C "/Ini/Config/Game.ini", "[Video]\r\nWidth=800\r\nHeight=600\r\nGamma=3\r\n" );
+        CHECK( game_fixes_apply( ROOT, DRIVE_C "/Ini/Game.exe", fix, setup, sizeof(setup), why, sizeof(why) ) == 0 );
+        CHECK( (text = slurp( DRIVE_C "/Ini/Config/Game.ini", NULL )) );
+        CHECK( strstr( text, "Width=1280" ) && strstr( text, "Height=720" ) && strstr( text, "Gamma=3" ) );
+        free( text );
+        /* Fallout: New Vegas has settings of its own in Autorun: the fix's file is not written. */
+        put( DRIVE_C "/FNV2/FalloutNV.exe", "MZ" );
+        CHECK( game_fixes_apply( ROOT, DRIVE_C "/FNV2/FalloutNV.exe", fix, setup, sizeof(setup), why, sizeof(why) ) == 0 );
+        CHECK( access( DRIVE_C "/FNV2/Config/FalloutNV.ini", F_OK ) );
+        game_fixes_free( &own );
+
+        /* A string longer than where it goes leaves its fix out, not the index. */
+        at = big + sprintf( big, "{\"schema\": 1, \"serial\": 1, \"fixes\": [{\"id\": \"long\", \"title\": \"" );
+        memset( at, 'x', 5000 );
+        at += 5000;
+        sprintf( at, "\", \"version\": 1, \"summary\": \"s\", \"match\": {\"exe\": [\"l.exe\"]}, "
+                     "\"settings\": {\"d3d\": \"wine\"}}, {\"id\": \"after\", \"title\": \"A\", \"version\": 1, "
+                     "\"summary\": \"s\", \"match\": {\"exe\": [\"a.exe\"]}, \"settings\": {\"d3d\": \"wine\"}}]}" );
+        CHECK( game_fixes_parse( big, strlen( big ), &own ) == HORIZON_DLLS_OK );
+        CHECK( own.count == 1 && own.skipped == 1 && !strcmp( own.fixes[0].id, "after" ) );
+        game_fixes_free( &own );
+    }
+
     printf( "game fixes: index read and kept, games matched by name, files, version strings and build, "
-            "files checked and put in place, setups prepared and recorded, updates and skips\n" );
+            "files checked and put in place, the game's own settings file, setups prepared and recorded, updates and skips\n" );
     return 0;
 }

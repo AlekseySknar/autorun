@@ -3,6 +3,7 @@
 #include "launcher_list.h"
 #include "launcher_pe.h"
 #include "launcher_settings.h"
+#include "game_settings.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -60,11 +61,15 @@ struct reading
     char run[64];
 };
 
+/* A string too long for where it goes is passed over whole, so the rest of the
+ * index still reads. */
 static int string_or_bad( struct parser *p, struct reading *r, char *out, size_t size )
 {
-    char scratch[1024];
+    const unsigned char *start;
+    char scratch[4096];
 
     whitespace( p );
+    start = p->p;
     if (p->p == p->end || *p->p != '"') { r->bad = 1; return skip_value( p ); }
     if (json_string( p, scratch, sizeof(scratch) ) && strlen( scratch ) < size)
     {
@@ -72,7 +77,8 @@ static int string_or_bad( struct parser *p, struct reading *r, char *out, size_t
         return 1;
     }
     r->bad = 1;
-    return 1;
+    p->p = start;
+    return skip_string( p );
 }
 
 static unsigned int uint_or_bad( struct parser *p, struct reading *r )
@@ -319,6 +325,56 @@ static int read_setting( struct parser *p, const char *key, void *data )
     return 1;
 }
 
+static int read_row_field( struct parser *p, const char *key, void *data )
+{
+    struct reading *r = data;
+    struct game_fix_row *row = &r->fix->game_settings.rows[r->fix->game_settings.row_count];
+
+    if (!strcmp( key, "section" )) return string_or_bad( p, r, row->section, sizeof(row->section) );
+    if (!strcmp( key, "key" )) return string_or_bad( p, r, row->key, sizeof(row->key) );
+    if (!strcmp( key, "initial" )) return string_or_bad( p, r, row->initial, sizeof(row->initial) );
+    r->bad = 1;
+    return skip_value( p );
+}
+
+static int read_row( struct parser *p, void *data )
+{
+    struct reading *r = data;
+    struct game_fix_settings_file *file = &r->fix->game_settings;
+    struct game_fix_row *row;
+
+    if (file->row_count >= GAME_FIX_ROWS) { r->bad = 1; return skip_value( p ); }
+    row = &file->rows[file->row_count];
+    memset( row, 0, sizeof(*row) );
+    if (!object( p, read_row_field, data )) return 0;
+    if (!row->section[0] || !row->key[0] || !row->initial[0] ||
+        strpbrk( row->section, "\r\n" ) || strpbrk( row->key, "\r\n" ) || strpbrk( row->initial, "\r\n" ))
+    { r->bad = 1; return 1; }
+    file->row_count++;
+    return 1;
+}
+
+static int read_game_settings_field( struct parser *p, const char *key, void *data )
+{
+    struct reading *r = data;
+    struct game_fix_settings_file *file = &r->fix->game_settings;
+
+    if (!strcmp( key, "path" )) return string_or_bad( p, r, file->path, sizeof(file->path) );
+    if (!strcmp( key, "initial_text" )) return string_or_bad( p, r, file->initial_text, sizeof(file->initial_text) );
+    if (!strcmp( key, "rows" )) return array( p, read_row, data );
+    if (!strcmp( key, "format" ))
+    {
+        char format[8] = "";
+
+        if (!string_or_bad( p, r, format, sizeof(format) )) return 0;
+        if (!strcmp( format, "xml" )) file->xml = 1;
+        else if (strcmp( format, "ini" )) r->bad = 1;
+        return 1;
+    }
+    r->bad = 1;
+    return skip_value( p );
+}
+
 static int read_fix_field( struct parser *p, const char *key, void *data )
 {
     struct reading *r = data;
@@ -339,6 +395,11 @@ static int read_fix_field( struct parser *p, const char *key, void *data )
     if (!strcmp( key, "files" )) return array( p, read_file, data );
     if (!strcmp( key, "install" )) return array( p, read_install, data );
     if (!strcmp( key, "settings" )) return object( p, read_setting, data );
+    if (!strcmp( key, "game_settings" ))
+    {
+        r->fix->has_game_settings = 1;
+        return object( p, read_game_settings_field, data );
+    }
     /* Something a later build knows how to do: applying the rest of the fix
      * without it would be applying half of it. */
     r->bad = 1;
@@ -391,7 +452,9 @@ static int read_fix( struct parser *p, void *data )
         if (at < 0) r.bad = 1;
         else install->file = (unsigned int)at;
     }
-    if (!f->file_count && !f->setting_count) r.bad = 1;
+    if (f->has_game_settings && (!valid_destination( f->game_settings.path ) || !f->game_settings.row_count))
+        r.bad = 1;
+    if (!f->file_count && !f->setting_count && !f->has_game_settings) r.bad = 1;
     for (i = 0; i < index->count && !r.bad; i++)
         if (!strcmp( index->fixes[i].id, f->id )) r.bad = 1;
     if (r.bad) index->skipped++;
@@ -942,6 +1005,64 @@ static int write_text( const char *path, const char *text )
     return write_atomically( path, text, strlen( text ) );
 }
 
+/* The fix's values into the game's own settings file, through Autorun's game
+ * settings engine, as rows of text it writes whatever the file held. A game
+ * Autorun has settings of its own for (game_settings_find) keeps those: one source of
+ * values for a file, never two. Returns 0 with why when the file could not be
+ * read or written. */
+static int apply_game_settings( const char *root, const char *exe_path, const struct game_fix *fix,
+                                char *why, size_t why_size )
+{
+    const struct game_fix_settings_file *file = &fix->game_settings;
+    struct game_setting rows[GAME_FIX_ROWS];
+    struct game_settings_profile profile;
+    struct game_settings *settings;
+    char path[640], device[16];
+    const char *relative;
+    unsigned int i;
+    int ok;
+
+    if (game_settings_find( exe_path, 0x014c ) || game_settings_find( exe_path, 0x8664 )) return 1;
+    /* The engine opens root/path: the device is the root, sdmc: or ums0:. */
+    if (!destination( root, exe_path, file->path, path, sizeof(path) ) || !(relative = strstr( path, ":/" )) ||
+        (size_t)(relative - path) + 2 > sizeof(device))
+    {
+        snprintf( why, why_size, "The path of the game's settings file is too long." );
+        return 0;
+    }
+    memcpy( device, path, relative - path + 1 );
+    device[relative - path + 1] = 0;
+    relative += 2;
+    memset( rows, 0, sizeof(rows) );
+    for (i = 0; i < file->row_count; i++)
+    {
+        rows[i].section = file->rows[i].section;
+        rows[i].key = file->rows[i].key;
+        rows[i].label = file->rows[i].key;
+        rows[i].initial = file->rows[i].initial;
+        rows[i].type = GAME_SETTING_TEXT;
+    }
+    memset( &profile, 0, sizeof(profile) );
+    profile.executable = base_name( exe_path );
+    profile.path = relative;
+    profile.settings = rows;
+    profile.count = file->row_count;
+    profile.format = file->xml ? GAME_SETTINGS_XML : GAME_SETTINGS_INI;
+    profile.initial_text = file->initial_text[0] ? file->initial_text : NULL;
+    if (!make_parents( path ) || !(settings = game_settings_open( device, &profile )))
+    {
+        snprintf( why, why_size, "Could not read %s.", path );
+        return 0;
+    }
+    /* Every row, every time: the engine sets initial values only once a file,
+     * and a newer version of the fix has to reach a file set by an older one. */
+    for (i = 0, ok = 1; i < file->row_count && ok; i++) ok = game_settings_set( settings, i, rows[i].initial );
+    ok = ok && game_settings_save( settings );
+    game_settings_close( settings );
+    if (!ok) snprintf( why, why_size, "Could not write %s.", path );
+    return ok;
+}
+
 int game_fixes_apply( const char *root, const char *exe_path, const struct game_fix *fix,
                       char *setup, size_t setup_size, char *why, size_t why_size )
 {
@@ -966,6 +1087,7 @@ int game_fixes_apply( const char *root, const char *exe_path, const struct game_
             return -1;
         }
     }
+    if (fix->has_game_settings && !apply_game_settings( root, exe_path, fix, why, why_size )) return -1;
     if (fix->run < 0)
     {
         snprintf( value, sizeof(value), "%s %u 0", fix->id, fix->version );

@@ -10,11 +10,6 @@
 
 #include "game_settings.h"
 #include "games/arguments.h"
-#include "games/fallout3.h"
-#include "games/fallout4.h"
-#include "games/falloutnv.h"
-#include "games/moha.h"
-#include "games/spiderman_wos.h"
 
 #define INI_LIMIT 65536
 
@@ -280,27 +275,22 @@ static int config_set( struct game_settings *settings, const char *section, cons
     return n >= 0 && (size_t)n < sizeof(line) && ini_replace( settings, insert, insert, line );
 }
 
-#include "games/ff7remake_settings.h"
-
-/* The profiles built into this runtime. */
-static const struct game_settings_profile *const game_settings_builtin[] = {
-    &fallout3_profile, &fallout4_profile, &falloutnv_profile, &moha_profile, &spiderman_wos_profile,
-    &ff7remake_profile
-};
-
-const struct game_settings_profile *game_settings_find_builtin( const char *target, uint16_t machine )
+/* Final Fantasy VII Remake: its screen percentage also bounds the dynamic
+ * resolution, or the engine moves away from it. The profile is the game
+ * fixes repository's; the hook it names stays here, as code. */
+static int ff7remake_update( struct game_settings *settings, unsigned int index, const char *value )
 {
-    const char *name = target;
+    static const char *const bounds[] = { "r.DynamicRes.MinScreenPercentage", "r.DynamicRes.MaxScreenPercentage" };
 
-    for (const char *p = target; *p; p++) if (*p == '/' || *p == '\\') name = p + 1;
-    for (unsigned int i = 0; i < sizeof(game_settings_builtin) / sizeof(game_settings_builtin[0]); i++)
-        if (game_settings_builtin[i]->machine == machine && !strcasecmp( name, game_settings_builtin[i]->executable ))
-            return game_settings_builtin[i];
-    return NULL;
+    if (strcmp( settings->profile->settings[index].key, "r.ScreenPercentage" )) return 1;
+    for (unsigned int i = 0; i < sizeof(bounds) / sizeof(bounds[0]); i++)
+        if (value ? !ini_set( settings, "SystemSettings", bounds[i], value ) :
+                    !ini_remove( settings, "SystemSettings", bounds[i] )) return 0;
+    return 1;
 }
 
-/* Profiles from elsewhere -- the game fixes repository's (game_fixes.c) -- for
- * games this runtime has none built in for. A built-in profile always wins. */
+/* The game fixes repository's profiles (game_fixes.c): every game's settings
+ * screen, settings file and launch arguments are data there now. */
 static const struct game_settings_profile *(*game_settings_provider)( const char *target, uint16_t machine );
 
 void game_settings_set_provider( const struct game_settings_profile *(*provider)( const char *target, uint16_t machine ) )
@@ -310,10 +300,7 @@ void game_settings_set_provider( const struct game_settings_profile *(*provider)
 
 const struct game_settings_profile *game_settings_find( const char *target, uint16_t machine )
 {
-    const struct game_settings_profile *profile = game_settings_find_builtin( target, machine );
-
-    if (!profile && game_settings_provider) profile = game_settings_provider( target, machine );
-    return profile;
+    return game_settings_provider ? game_settings_provider( target, machine ) : NULL;
 }
 
 /* An update hook by the name a profile from elsewhere gives it. */
@@ -354,12 +341,44 @@ int game_settings_append_arguments( const char *root, const char *target, uint16
 
     if (api < 0) return 0;
     if (api && !game_set_d3d_argument( command_line, size, api )) return 0;
-    if (!profile || !profile->arguments) return 1;
-    length = strnlen( command_line, size );
-    extra = strlen( profile->arguments );
-    if (length >= size || size - length <= extra + 1) return 0;
-    command_line[length] = ' ';
-    memcpy( command_line + length + 1, profile->arguments, extra + 1 );
+    if (!profile) return 1;
+    if (profile->arguments)
+    {
+        length = strnlen( command_line, size );
+        extra = strlen( profile->arguments );
+        if (length >= size || size - length <= extra + 1) return 0;
+        command_line[length] = ' ';
+        memcpy( command_line + length + 1, profile->arguments, extra + 1 );
+    }
+    return game_settings_add_arguments( profile, command_line, size );
+}
+
+/* The profile's add_arguments the command line lacks, each after a space, in
+ * order: all of them or, when they don't fit, none. */
+int game_settings_add_arguments( const struct game_settings_profile *profile, char *command_line, size_t size )
+{
+    size_t length = strnlen( command_line, size ), needed = 0;
+    unsigned int i;
+    char missing[64] = {0};
+
+    if (!profile->add_argument_count) return 1;
+    if (length == size || profile->add_argument_count > sizeof(missing)) return 0;
+    for (i = 0; i < profile->add_argument_count; i++)
+        if (!game_has_argument( command_line, profile->add_arguments[i].unless ))
+        {
+            missing[i] = 1;
+            needed += 1 + strlen( profile->add_arguments[i].add );
+        }
+    if (needed >= size - length) return 0;
+    for (i = 0; i < profile->add_argument_count; i++)
+        if (missing[i])
+        {
+            size_t count = strlen( profile->add_arguments[i].add );
+
+            command_line[length++] = ' ';
+            memcpy( command_line + length, profile->add_arguments[i].add, count + 1 );
+            length += count;
+        }
     return 1;
 }
 
@@ -370,7 +389,7 @@ struct game_settings *game_settings_open( const char *root, const struct game_se
     FILE *file;
     int ok = 1;
 
-    if (!profile || profile->preset_count > 4 || profile->format > GAME_SETTINGS_XML ||
+    if (!profile || !profile->path || profile->preset_count > 4 || profile->format > GAME_SETTINGS_XML ||
         profile->count > GAME_SETTINGS_MAX_ROWS - 1) return NULL;
     if (!(settings = calloc( 1, sizeof(*settings) ))) return NULL;
     settings->profile = profile;
@@ -569,7 +588,7 @@ int game_settings_prepare( const char *root, const char *target, uint16_t machin
     struct game_settings *settings;
     int ok;
 
-    if (!profile) return 1;
+    if (!profile || !profile->path) return 1;  /* none, or arguments only */
     if (!(settings = game_settings_open( root, profile ))) return 0;
     ok = game_settings_save( settings );
     game_settings_close( settings );

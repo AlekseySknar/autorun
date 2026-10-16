@@ -28,6 +28,13 @@ struct game_setting
 
 struct game_settings;
 
+/* An argument a game is started with unless its command line already has one
+ * like it: add when the command line has no argument beginning with unless. */
+struct game_argument
+{
+    const char *unless, *add;
+};
+
 typedef int (*game_settings_update_fn)( struct game_settings *settings, unsigned int index, const char *value );
 
 struct game_settings_profile
@@ -45,14 +52,18 @@ struct game_settings_profile
     const char *arguments;
     game_settings_update_fn update;
     const char *const *help;
+    /* Each added unless the command line has it, all or none; a profile with
+     * these and no path has no settings file and no settings screen. */
+    const struct game_argument *add_arguments;
+    unsigned int add_argument_count;
 };
 
-/* A built-in profile, or else one from the provider. */
+/* The provider's profile for the game: the game fixes repository's. */
 const struct game_settings_profile *game_settings_find( const char *target, uint16_t machine );
-const struct game_settings_profile *game_settings_find_builtin( const char *target, uint16_t machine );
 void game_settings_set_provider( const struct game_settings_profile *(*provider)( const char *target, uint16_t machine ) );
 game_settings_update_fn game_settings_update_hook( const char *name );
 int game_settings_d3d_api( const char *root, const char *target, uint16_t machine );
+int game_settings_add_arguments( const struct game_settings_profile *profile, char *command_line, size_t size );
 int game_settings_append_arguments( const char *root, const char *target, uint16_t machine,
                                     char *command_line, size_t size );
 struct game_settings *game_settings_open( const char *root, const struct game_settings_profile *profile );

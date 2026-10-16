@@ -21,7 +21,7 @@ root = Path(__file__).resolve().parents[2]
 runtime = (root / 'horizon-wine/source/runtime.c').read_text()
 advapi = (root / 'dlls/advapi32/advapi.c').read_text()
 shellpath = (root / 'dlls/shell32/shellpath.c').read_text()
-falloutnv = (root / 'horizon-wine/source/games/falloutnv.h').read_text()
+falloutnv = (root / 'game-fixes/profiles/falloutnv.json').read_text()
 failures = []
 
 
@@ -75,9 +75,9 @@ for folder in ('AppData/Local', 'AppData/Roaming', 'Desktop', 'Documents',
                'Downloads', 'Music', 'Pictures', 'Saved Games', 'Videos'):
     check(folder in made, f'the runtime does not create {folder} in the profile')
 
-# The settings the runtime writes for Fallout: New Vegas (games/falloutnv.h)
+# The settings the runtime writes for Fallout: New Vegas (its profile in game-fixes)
 # are inside that profile.
-staged = re.search(r'\.path = "drive_c/users/([^/]*)/Documents/My Games/FalloutNV/FalloutPrefs\.ini"', falloutnv)
+staged = re.search(r'"path": "\{drive_c\}/users/([^/]*)/Documents/My Games/FalloutNV/FalloutPrefs\.ini"', falloutnv)
 check(staged is not None, 'Fallout: New Vegas settings are no longer written under Documents')
 if staged and user_name:
     check(staged.group(1) == user_name,

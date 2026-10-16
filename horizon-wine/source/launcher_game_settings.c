@@ -11,6 +11,8 @@ void launcher_game_settings_load( struct launcher_game_settings *state, const ch
 {
     const struct game_settings_profile *profile = game_settings_find( target, machine );
 
+    /* A profile of arguments alone has no settings to show. */
+    if (profile && !profile->count) profile = NULL;
     if (profile == state->profile) return;
     game_settings_close( state->settings );
     state->profile = profile;

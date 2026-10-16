@@ -643,6 +643,32 @@ static int read_pending( struct parser *p, void *data )
     return profile_string( p, r, &r->profile->profile.pending_resolution[r->preset++], 64, 0 );
 }
 
+static int read_add_argument_field( struct parser *p, const char *key, void *data )
+{
+    struct reading *r = data;
+    struct game_argument *argument = &r->profile->add_arguments[r->profile->profile.add_argument_count];
+
+    if (!strcmp( key, "unless" )) return profile_string( p, r, &argument->unless, 128, 0 );
+    if (!strcmp( key, "add" )) return profile_string( p, r, &argument->add, 256, 0 );
+    r->bad = 1;
+    return skip_value( p );
+}
+
+static int read_add_argument( struct parser *p, void *data )
+{
+    struct reading *r = data;
+    struct game_fixes_profile *g = r->profile;
+    struct game_argument *argument;
+
+    if (g->profile.add_argument_count >= sizeof(g->add_arguments) / sizeof(g->add_arguments[0]))
+    { r->bad = 1; return skip_value( p ); }
+    argument = &g->add_arguments[g->profile.add_argument_count];
+    if (!object( p, read_add_argument_field, data )) return 0;
+    if (!argument->unless || !argument->unless[0] || !argument->add || !argument->add[0]) { r->bad = 1; return 1; }
+    g->profile.add_argument_count++;
+    return 1;
+}
+
 static int read_profile_field( struct parser *p, const char *key, void *data )
 {
     struct reading *r = data;
@@ -657,6 +683,7 @@ static int read_profile_field( struct parser *p, const char *key, void *data )
     if (!strcmp( key, "pending_resolution" )) { r->preset = 0; return array( p, read_pending, data ); }
     if (!strcmp( key, "initial_text" )) return profile_string( p, r, &g->profile.initial_text, 4096, 0 );
     if (!strcmp( key, "arguments" )) return profile_string( p, r, &g->profile.arguments, 1024, 0 );
+    if (!strcmp( key, "add_arguments" )) return array( p, read_add_argument, data );
     if (!strcmp( key, "path" ))
     {
         /* Under drive_c, which is where the engine opens it from the runtime's folder. */
@@ -721,8 +748,10 @@ static int read_profile( struct parser *p, void *data )
 
     for (c = g->id; *c; c++)
         if (!islower( (unsigned char)*c ) && !isdigit( (unsigned char)*c ) && *c != '-') r.bad = 1;
-    if (!g->id[0] || !g->version || (!g->match.exe_count && !g->match.version_count) ||
-        !g->profile.machine || !g->profile.path || !g->profile.count) r.bad = 1;
+    /* A settings file with its settings, or arguments alone: never half of a file. */
+    if (!g->id[0] || !g->version || (!g->match.exe_count && !g->match.version_count) || !g->profile.machine ||
+        !g->profile.path != !g->profile.count ||
+        (!g->profile.path && !g->profile.arguments && !g->profile.add_argument_count)) r.bad = 1;
     for (i = 0; i < g->profile.count && !r.bad; i++)
         if (g->profile.format == GAME_SETTINGS_INI && !g->rows[i].section) r.bad = 1;
     for (i = 0; i < index->profile_count && !r.bad; i++)
@@ -737,6 +766,7 @@ static int read_profile( struct parser *p, void *data )
     g->profile.executable = g->match.exe_count ? g->match.exes[0] : g->id;
     g->profile.settings = g->rows;
     if (g->profile.preset_count) g->profile.presets = g->presets;
+    if (g->profile.add_argument_count) g->profile.add_arguments = g->add_arguments;
     for (i = 0; i < g->profile.count; i++)
         if (g->help[i]) g->profile.help = g->help;
     index->profiles[index->profile_count++] = g;
@@ -1010,9 +1040,10 @@ enum horizon_dlls_result game_fixes_download( const char *root, const struct hor
 
 static const char *base_name( const char *path )
 {
-    const char *slash = strrchr( path, '/' );
+    const char *name = path;
 
-    return slash ? slash + 1 : path;
+    for (const char *p = path; *p; p++) if (*p == '/' || *p == '\\') name = p + 1;
+    return name;
 }
 
 /* The executable's folder joined with a relative path, its ".." parts taken

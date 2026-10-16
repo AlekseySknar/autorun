@@ -36,8 +36,6 @@
 #include "game_settings.h"
 #include "ground_zeroes_startup.h"
 #include "gtaiv_startup.h"
-#include "games/kingdom_hearts.h"
-#include "games/tomb_raider.h"
 #include "games/left4dead.h"
 #include "games/ff7remake.h"
 #include "fex_options.h"
@@ -1977,8 +1975,6 @@ static RTL_USER_PROCESS_PARAMETERS *runtime_create_process_params( const char *t
     }
 
     if (!game_settings_append_arguments( WINE_ROOT, target, main_image_info.Machine, cmdline, sizeof(cmdline) )) return NULL;
-    if (!kingdom_hearts_append_arguments( target, main_image_info.Machine, cmdline, sizeof(cmdline) )) return NULL;
-    if (!tomb_raider_append_arguments( target, main_image_info.Machine, cmdline, sizeof(cmdline) )) return NULL;
     if (left4dead && !left4dead_append_arguments( cmdline, sizeof(cmdline) )) return NULL;
     if (api) log_line( "[ARGS] final CommandLine='%s'", cmdline );
 

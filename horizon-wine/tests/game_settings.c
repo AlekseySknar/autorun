@@ -26,6 +26,14 @@ static int test_rename( const char *from, const char *to )
 #undef fsync
 #undef rename
 
+/* The profiles are the game fixes repository's, as on a card. */
+#include "repo_profiles.h"
+#define fallout3_profile (*repo_profile( "fallout3" ))
+#define fallout4_profile (*repo_profile( "fallout4" ))
+#define falloutnv_profile (*repo_profile( "falloutnv" ))
+#define moha_profile (*repo_profile( "moha" ))
+#define spiderman_wos_profile (*repo_profile( "spider-man-web-of-shadows" ))
+
 static unsigned int profile_option_index( const struct game_settings_profile *profile, const char *key )
 {
     for (unsigned int i = 0; i < profile->count; i++)
@@ -438,7 +446,7 @@ int main(void)
         static const char *const presets[] = { "Low", "High" };
         static const struct game_settings_profile profile = {
             "Another.exe", 0x014c, "other.ini", presets, 2, options, 1,
-            GAME_SETTINGS_INI, NULL, { NULL }, NULL, NULL, NULL
+            GAME_SETTINGS_INI, NULL, { NULL }, NULL, NULL, NULL, NULL, 0
         };
         char value[32], other_path[1024];
         other = game_settings_open( directory, &profile );

@@ -135,9 +135,9 @@ struct game_fix
 };
 
 /* A settings profile from the repository: what the launcher's game settings
- * screen shows and the runtime writes for a game (game_settings.h), for games
- * this runtime has no profile built in for. Unlike a fix it is not asked about:
- * a built-in profile is not either. Its id, version and the game it is for are
+ * screen shows, what the runtime writes for a game before it starts, and the
+ * arguments it starts it with (game_settings.h). Unlike a fix it is not asked
+ * about. Its id, version and the game it is for are
  * the repository's; profile is ready for game_settings_open, its strings and
  * arrays owned here. Each is allocated on its own, so profile stays where it is. */
 #define GAME_PROFILE_ROWS (GAME_SETTINGS_MAX_ROWS - 1)
@@ -150,6 +150,7 @@ struct game_fixes_profile
     struct game_setting rows[GAME_PROFILE_ROWS];
     const char *presets[4];
     const char *help[GAME_PROFILE_ROWS];
+    struct game_argument add_arguments[16];
     void **owned;
     unsigned int owned_count, owned_capacity;
 };
@@ -205,8 +206,7 @@ const struct game_fix *game_fixes_find( const struct game_fixes_index *index, co
 /* The repository's settings profile for the game, for the machine it is built for, or NULL. */
 const struct game_fixes_profile *game_fixes_match_profile( const struct game_fixes_index *index, const char *exe_path,
                                                            uint16_t machine );
-/* Offer the card's settings profiles to game_settings_find, for games with no
- * built-in one. The index is read once and kept for the life of the process,
+/* Offer the card's settings profiles to game_settings_find. The index is read once and kept for the life of the process,
  * so a profile handed out stays valid. */
 void game_fixes_install_profiles( const char *root );
 

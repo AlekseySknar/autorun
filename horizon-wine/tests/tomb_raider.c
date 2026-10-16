@@ -1,6 +1,18 @@
 #include <assert.h>
 #include <stdio.h>
-#include "../source/games/tomb_raider.h"
+#include "../source/game_settings.c"
+
+/* The arguments are the game fixes repository's profile's (add_arguments),
+ * as the runtime adds them; a game without one is left as it is. */
+#include "repo_profiles.h"
+static int tomb_raider_append_arguments( const char *target, uint16_t machine, char *command_line, size_t size )
+{
+    const struct game_settings_profile *profile;
+
+    repo_profiles_load();
+    profile = game_settings_find( target, machine );
+    return !profile || game_settings_add_arguments( profile, command_line, size );
+}
 
 int main(void)
 {

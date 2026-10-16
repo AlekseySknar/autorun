@@ -23,7 +23,10 @@ fix and says when the game may not start without it. Then it downloads and
 checks the fix, applies it, and runs the fix's setup program ahead of the game
 through `run-next.txt`. The archive ships the index as
 `game-fixes/bundled.json`, so a card that is offline still knows which games
-have a fix. `tests/check-game-fixes.sh` tests all of this against the
+have a fix. The same index carries every game's settings profile (its settings
+screen, settings file and launch arguments, read by `source/game_settings.c`):
+the runtime has none of its own. Patches to a game's code as it loads
+(`source/*_startup.h`) and Left 4 Dead's environment stay compiled. `tests/check-game-fixes.sh` tests all of this against the
 submodule.
 
 For how it all works, how to build it and what to run to test it, see

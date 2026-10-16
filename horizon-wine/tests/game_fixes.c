@@ -146,6 +146,15 @@ static void serve_index( const char *find, const char *replace, unsigned int ser
     free( out );
 }
 
+static const struct game_fixes_index *later_profiles;
+
+static const struct game_settings_profile *later_profile( const char *target, uint16_t machine )
+{
+    const struct game_fixes_profile *found = game_fixes_match_profile( later_profiles, target, machine );
+
+    return found ? &found->profile : NULL;
+}
+
 static enum game_fix_need need_of( const struct game_fixes_index *index, const char *exe )
 {
     struct game_fix_state state;
@@ -181,6 +190,12 @@ int main( int argc, char **argv )
     put( ROOT "/" GAME_FIXES_BUNDLED, text );
     free( text );
     CHECK( game_fixes_load( ROOT, &index ) == HORIZON_DLLS_OK );
+    /* Its settings profiles are every game's: offered to game_settings_find
+     * from the start, as the runtime does. */
+    game_fixes_install_profiles( ROOT );
+    CHECK( game_settings_find( DRIVE_C "/FNV/FalloutNV.exe", 0x014c ) );
+    CHECK( !strcmp( game_settings_find( DRIVE_C "/FNV/FalloutNV.exe", 0x014c )->path,
+                    "drive_c/users/steamuser/Documents/My Games/FalloutNV/FalloutPrefs.ini" ) );
     CHECK( index.count >= 4 && !index.skipped );
     serial = index.serial;
 
@@ -425,7 +440,7 @@ int main( int argc, char **argv )
         CHECK( (text = slurp( DRIVE_C "/Ini/Config/Game.ini", NULL )) );
         CHECK( strstr( text, "Width=1280" ) && strstr( text, "Height=720" ) && strstr( text, "Gamma=3" ) );
         free( text );
-        /* Fallout: New Vegas has settings of its own in Autorun: the fix's file is not written. */
+        /* Fallout: New Vegas has a settings profile: the fix's file is not written. */
         put( DRIVE_C "/FNV2/FalloutNV.exe", "MZ" );
         CHECK( game_fixes_apply( ROOT, DRIVE_C "/FNV2/FalloutNV.exe", fix, setup, sizeof(setup), why, sizeof(why) ) == 0 );
         CHECK( access( DRIVE_C "/FNV2/Config/FalloutNV.ini", F_OK ) );
@@ -454,6 +469,7 @@ int main( int argc, char **argv )
             " \"rows\": [{\"section\": \"Video\", \"key\": \"Width\", \"label\": \"Width\", \"type\": \"integer\","
             " \"initial\": \"1280\"}]},";
         const struct game_settings_profile *profile;
+        static struct game_fixes_index later;
         char *index_text, *at, *joined;
         size_t size;
 
@@ -475,13 +491,16 @@ int main( int argc, char **argv )
         free( joined );
         free( index_text );
 
-        game_fixes_install_profiles( ROOT );
+        /* The card's index with it, newest, as the provider the runtime installs. */
+        CHECK( game_fixes_load( ROOT, &later ) == HORIZON_DLLS_OK && later.serial == 9999 );
+        later_profiles = &later;
+        game_settings_set_provider( later_profile );
         put( DRIVE_C "/Test/Test.exe", "MZ" );
         CHECK( (profile = game_settings_find( DRIVE_C "/Test/Test.exe", 0x014c )) );
         CHECK( !strcmp( profile->path, "drive_c/users/steamuser/Documents/Test/test.ini" ) && profile->count == 1 );
         CHECK( !game_settings_find( DRIVE_C "/Test/Test.exe", 0x8664 ) );
-        CHECK( game_settings_find( DRIVE_C "/FNV/FalloutNV.exe", 0x014c ) ==
-               game_settings_find_builtin( DRIVE_C "/FNV/FalloutNV.exe", 0x014c ) );
+        CHECK( game_settings_find( DRIVE_C "/FNV/FalloutNV.exe", 0x014c ) &&
+               game_settings_find( DRIVE_C "/FNV/FalloutNV.exe", 0x014c )->count == 44 );
         CHECK( game_settings_prepare( ROOT, DRIVE_C "/Test/Test.exe", 0x014c ) );
         CHECK( (text = slurp( DRIVE_C "/users/steamuser/Documents/Test/test.ini", NULL )) );
         CHECK( strstr( text, "Width=1280" ) && strstr( text, "Gamma=1" ) );

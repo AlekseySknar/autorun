@@ -28,8 +28,12 @@ clang -std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined \
 clang -std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined \
     "$horizon_wine/tests/dxvk_options.c" "$horizon_wine/source/dxvk_options.c" -o "$build/dxvk_options"
 "$build/dxvk_options"
+# Its profiles are the game fixes repository's, as on a card.
 clang -std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined \
-    "$horizon_wine/tests/game_settings.c" -o "$build/game_settings"
+    -I "$horizon_wine/source" -I "$horizon_wine/tests" -I/opt/homebrew/include \
+    "-DGAME_FIXES_INDEX_PATH=\"$root/game-fixes/switch/wine/game-fixes/index.json\"" \
+    "$horizon_wine/tests/game_settings.c" "$horizon_wine/source/game_fixes.c" "$horizon_wine/source/horizon_dlls.c" \
+    -L/opt/homebrew/lib -lzstd -lz -o "$build/game_settings"
 "$build/game_settings"
 clang -std=gnu11 -Wall -Wextra -Werror -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
     "$horizon_wine/tests/launcher_svg.c" "$horizon_wine/source/launcher_svg.c" -o "$build/launcher_svg"

@@ -246,14 +246,18 @@ static int next_line(const struct buffer *text, size_t *position, struct line *l
     if (text->data[begin] == '[' || text->data[begin] == '{')
     {
         int section = text->data[begin] == '[';
-        if (end - begin < (section ? 3u : 2u) || text->data[end - 1] != (section ? ']' : '}') ||
+        /* [] is a section with no name, which Hekate shows as an empty tile:
+         * OmniNX pads its menu with them. */
+        if (end - begin < 2 || text->data[end - 1] != (section ? ']' : '}') ||
             end - begin - 2 >= sizeof(line->value)) return -1;
         strcpy(line->key, section ? "[" : "{");
         memcpy(line->value, text->data + begin + 1, end - begin - 2);
         return 1;
     }
     for (equals = begin; equals < end && text->data[equals] != '='; equals++);
-    if (equals == end) return -1;
+    /* Hekate passes over a line that is not key=value, such as the row of
+     * dashes OmniNX puts above its credits; it is kept as it is. */
+    if (equals == end) return 1;
     p = equals;
     while (p > begin && (text->data[p - 1] == ' ' || text->data[p - 1] == '\t')) p--;
     if (p == begin || p - begin >= sizeof(line->key)) return -1;
@@ -287,7 +291,7 @@ static int scan_entries(const struct buffer *ini, struct setup_boot_entry *entri
             }
             current = NULL;
             package = 0;
-            if (strcmp(line.key, "[") || !strcmp(line.value, "config")) continue;
+            if (strcmp(line.key, "[") || !strcmp(line.value, "config") || !line.value[0]) continue;
             if (n >= capacity || strlen(line.value) >= sizeof(entries[n].name)) return 0;
             current = &entries[n++];
             memset(current, 0, sizeof(*current));

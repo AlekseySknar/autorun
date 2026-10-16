@@ -832,7 +832,7 @@ static void test_empty_captions(int hoc)
 static void test_caption_validation(void)
 {
     static const char *const valid[] = {"{}\n", " \t{}\t\r\n", "{}", "{Caption}\n"};
-    static const char *const invalid[] = {"[]\n", "{\n", "{Caption\n", "[Boot\n"};
+    static const char *const invalid[] = {"{\n", "{Caption\n", "[Boot\n", "[\n", "=value\n"};
     struct line line;
     struct buffer text;
     struct fixture f;
@@ -858,6 +858,50 @@ static void test_caption_validation(void)
         assert(!count);
         free(ini.data);
     }
+    remove_fixture(f.root);
+}
+
+/* OmniNX's hekate_ipl.ini: CRLF, empty [] sections as spacer tiles, and a row
+ * of dashes with no = above its credits. Hekate boots it, so Autorun reads it,
+ * lists the one Atmosphere entry it can use and keeps every other byte. */
+static void test_omninx(void)
+{
+    static const char ini[] =
+        "[config]\r\nautoboot=0\r\nautoboot_list=0\r\nbootwait=3\r\nbacklight=90\r\n"
+        "autohosoff=2\r\nupdater2p=1\r\nbootprotect=0\r\nnoticker=0\r\n\r\n"
+        "[CFW-EmuMMC]\r\npkg3=atmosphere/package3\r\nemummcforce=1\r\ncal0blank=1\r\nusb3force=1\r\n"
+        "kip1=" HOC_KIP "\r\nsecmon=atmosphere/exosphere.bin\r\n"
+        "logopath=bootloader/bootlogo/bootlogo_cfw.bmp\r\nicon=bootloader/res/atmosphere_hue.bmp\r\n\r\n"
+        "[OFW]\r\npkg3=atmosphere/package3\r\nstock=1\r\ncal0blank=0\r\nemummc_force_disable=1\r\n"
+        "logopath=bootloader/bootlogo/bootlogo_stock.bmp\r\nicon=bootloader/res/icon_switch_hue.bmp\r\n\r\n"
+        "[]\r\npayload=bootloader/update.bin\r\nicon=bootloader/res/empty_nobox.bmp\r\n\r\n"
+        "[]\r\npayload=bootloader/update.bin\r\nicon=bootloader/res/empty_nobox.bmp\r\n\r\n"
+        "[APL]\r\npayload=bootloader/payloads/AllgemeinerProblemLoeser.bin\r\n"
+        "icon=bootloader/res/Tegra_Explorer_hue.bmp\r\n\r\n"
+        "[Lockpick_RCM]\r\npayload=bootloader/payloads/Lockpick_RCM.bin\r\nicon=bootloader/res/lockpick_hue.bmp\r\n"
+        "--------------------------------------------------------------\r\n"
+        ";{OmniNX - Ein Nintendo Switch CFW Pack}\r\n\r\n\r\n";
+    struct fixture f;
+    struct setup_boot_entry entries[64];
+    struct buffer result;
+    size_t count;
+    char detail[256];
+
+    fixture_init(&f);
+    replace_file(f.root, SETUP_BOOT_INI, ini, sizeof(ini) - 1);
+    assert(setup_boot_list(f.root, entries, 64, &count, detail, sizeof(detail)) == SETUP_BOOT_OK);
+    /* The spacers are not entries; the payloads and the stock OS cannot carry Autorun. */
+    assert(count == 4 && !strcmp(entries[0].name, "CFW-EmuMMC") && entries[0].supported);
+    assert(!entries[1].supported && !entries[2].supported && !entries[3].supported);
+    f.options.entry = entries[0];
+    f.options.loader = SETUP_BOOT_HOC;
+    f.options.preserve_hoc = 1;
+    assert(install(&f) == SETUP_BOOT_OK);
+    assert(!setup_boot_needs_update(f.root, &f.manifest, NULL));
+    assert(read_file(f.root, SETUP_BOOT_INI, INI_LIMIT, &result) == 1);
+    assert(result.size > sizeof(ini) - 1 && !memcmp(result.data, ini, sizeof(ini) - 1));
+    assert(strstr((char *)result.data + sizeof(ini) - 1, "[Autorun]"));
+    free(result.data);
     remove_fixture(f.root);
 }
 
@@ -901,6 +945,7 @@ int main(void)
     test_case_sensitive_package();
     test_empty_captions(0);
     test_empty_captions(1);
+    test_omninx();
     test_caption_validation();
     puts("boot setup: clone, updates, HOC preservation, path safety and recovery passed");
     return 0;

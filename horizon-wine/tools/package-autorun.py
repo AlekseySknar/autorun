@@ -172,8 +172,8 @@ repository (github.com/autorunhq/autorun-game-fixes). When a game in the
 library has one, the launcher asks before the game starts, and says when the
 game may not start without it; the fix is downloaded, checked and applied, and
 the game starts after it. This archive knows which games have fixes even
-offline; applying one needs the internet once. WarCraft III, The Sims 2
-Ultimate Collection, Guitar Hero III and Halo have fixes. A game's Library
+offline; applying one needs the internet once. Which games have one:
+github.com/autorunhq/autorun-game-fixes/blob/main/FIXES.md. A game's Library
 settings show its fix, and choosing it asks again at the next
 start. Without a network, copy the switch folder of autorun-game-fixes to the
 card the same way as the DLLs.

@@ -784,6 +784,83 @@ static void test_case_sensitive_package(void)
     remove_fixture(f.root);
 }
 
+static void test_empty_captions(int hoc)
+{
+    static const char ini[] =
+        "[config]\nautoboot=0\nautoboot_list=0\nbootwait=0\nverification=1\n"
+        "backlight=100\nautohosoff=2\nautonogc=1\nupdater2p=1\n\n\n"
+        "[CFW (EMUMMC) Overclock]\nfss0=atmosphere/package3\n"
+        "kip1=" HOC_KIP "\nsecmon=atmosphere/exosphere.bin\n"
+        "emummcforce=1\nicon=bootloader/res/emummc.bmp\n{}\n\n"
+        "[CFW (EMUMMC) no kip]\nfss0=atmosphere/package3\n"
+        "emummcforce=1\nicon=bootloader/res/emummc.bmp\n{}\n\n\n\n\n";
+    struct fixture f;
+    struct setup_boot_entry entries[64];
+    struct buffer result;
+    size_t count;
+    char detail[256], *clone;
+    unsigned int i;
+
+    for (i = 0; i < 2; i++)
+    {
+        fixture_init(&f);
+        replace_file(f.root, SETUP_BOOT_INI, ini, sizeof(ini) - 1);
+        assert(setup_boot_list(f.root, entries, 64, &count, detail, sizeof(detail)) == SETUP_BOOT_OK);
+        assert(count == 2 && entries[0].supported && entries[1].supported);
+        f.options.entry = entries[i];
+        f.options.loader = hoc ? SETUP_BOOT_HOC : SETUP_BOOT_STOCK;
+        f.options.preserve_hoc = hoc;
+        assert(install(&f) == SETUP_BOOT_OK);
+        assert(!setup_boot_needs_update(f.root, &f.manifest, NULL));
+        assert(read_file(f.root, SETUP_BOOT_INI, INI_LIMIT, &result) == 1);
+        assert(result.size > sizeof(ini) - 1 && !memcmp(result.data, ini, sizeof(ini) - 1));
+        assert((clone = strstr((char *)result.data, "[Autorun]\n")));
+        assert(!strstr(clone, "{}"));
+        assert(strstr(clone, hoc ? "kip1=" HOC_KIP "\nkernel=" MESOSPHERE "\n" :
+                                  "kip1=" STOCK_KIP "\nkernel=" MESOSPHERE "\n"));
+        assert(strstr(clone, "emummcforce=1\nicon=bootloader/res/emummc.bmp\n"));
+        assert(!!strstr(clone, "secmon=atmosphere/exosphere.bin\n") == !i);
+        assert(setup_boot_list(f.root, entries, 64, &count, detail, sizeof(detail)) == SETUP_BOOT_OK && count == 3);
+        f.options.entry = entries[i];
+        assert(install(&f) == SETUP_BOOT_OK);
+        check_file(f.root, SETUP_BOOT_INI, result.data, result.size);
+        free(result.data);
+        remove_fixture(f.root);
+    }
+}
+
+static void test_caption_validation(void)
+{
+    static const char *const valid[] = {"{}\n", " \t{}\t\r\n", "{}", "{Caption}\n"};
+    static const char *const invalid[] = {"[]\n", "{\n", "{Caption\n", "[Boot\n"};
+    struct line line;
+    struct buffer text;
+    struct fixture f;
+    struct setup_boot_entry entries[64];
+    size_t position, count;
+    char detail[256];
+    unsigned int i;
+
+    for (i = 0; i < sizeof(valid) / sizeof(valid[0]); i++)
+    {
+        text.data = (unsigned char *)valid[i];
+        text.size = strlen(valid[i]);
+        position = 0;
+        assert(next_line(&text, &position, &line) == 1 && !strcmp(line.key, "{"));
+    }
+    fixture_init(&f);
+    for (i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++)
+    {
+        struct buffer ini = {0};
+        assert(append(&ini, original_ini, strlen(original_ini)) && add_text(&ini, "\n") && add_text(&ini, invalid[i]));
+        replace_file(f.root, SETUP_BOOT_INI, ini.data, ini.size);
+        assert(setup_boot_list(f.root, entries, 64, &count, detail, sizeof(detail)) == SETUP_BOOT_INVALID);
+        assert(!count);
+        free(ini.data);
+    }
+    remove_fixture(f.root);
+}
+
 int main(void)
 {
     static const unsigned char expected[32] = {
@@ -822,6 +899,9 @@ int main(void)
     for (i = 0; i < 5; i++) test_staging_failure(i);
     test_staging_conflict();
     test_case_sensitive_package();
+    test_empty_captions(0);
+    test_empty_captions(1);
+    test_caption_validation();
     puts("boot setup: clone, updates, HOC preservation, path safety and recovery passed");
     return 0;
 }

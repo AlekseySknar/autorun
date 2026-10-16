@@ -246,7 +246,8 @@ static int next_line(const struct buffer *text, size_t *position, struct line *l
     if (text->data[begin] == '[' || text->data[begin] == '{')
     {
         int section = text->data[begin] == '[';
-        if (end - begin < 3 || text->data[end - 1] != (section ? ']' : '}') || end - begin - 2 >= sizeof(line->value)) return -1;
+        if (end - begin < (section ? 3u : 2u) || text->data[end - 1] != (section ? ']' : '}') ||
+            end - begin - 2 >= sizeof(line->value)) return -1;
         strcpy(line->key, section ? "[" : "{");
         memcpy(line->value, text->data + begin + 1, end - begin - 2);
         return 1;
@@ -310,7 +311,7 @@ static int scan_entries(const struct buffer *ini, struct setup_boot_entry *entri
         if (package != 1) strcpy(current->reason, "Requires one pkg3/fss0 Atmosphere package");
         current->supported = !*current->reason;
     }
-    *count = n;
+    *count = r < 0 ? 0 : n;
     return r >= 0;
 }
 

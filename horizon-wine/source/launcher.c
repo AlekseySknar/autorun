@@ -45,6 +45,7 @@
 #include "launcher_artwork.h"
 #include "launcher_update.h"
 #include "launcher_dlls.h"
+#include "launcher_fixes.h"
 #include "launcher_setup.h"
 #include "setup_boot.h"
 #include "launcher_graphics.h"
@@ -172,6 +173,9 @@ struct launcher
     struct ui ui;
     struct launcher_update *update;
     struct launcher_dlls *dlls;
+    struct launcher_fixes *fixes;
+    /* The game fixes index got newer: say so once nothing modal is up. */
+    int fixes_notice;
     struct launcher_graphics *graphics;
 
     struct program programs[LAUNCHER_MAX_ENTRIES];
@@ -1757,7 +1761,7 @@ enum program_row
     ROW_LSFG, ROW_LSFG_DLL, ROW_LSFG_PERFORMANCE, ROW_LSFG_FLOW,
     ROW_UPSCALING, ROW_UPSCALING_SHARPNESS,
     ROW_INPUT, ROW_INPUT_END = ROW_INPUT + INPUT_ROW_COUNT - 1, ROW_BOX64, ROW_FEX, ROW_SYNC, ROW_CPU, ROW_FOUR_CORES,
-    ROW_HIDE, ROW_LIBRARY, PROGRAM_ROWS
+    ROW_HIDE, ROW_LIBRARY, ROW_GAME_FIX, PROGRAM_ROWS
 };
 
 static int file_browser_pick( struct launcher *l, char *target, size_t size );
@@ -2000,7 +2004,8 @@ static int prepare_program_graphics( struct launcher *l, struct program *p )
 static int start_program( struct launcher *l, struct program *p, char *target, size_t size )
 {
     struct ui *ui = &l->ui;
-    char path[512];
+    char path[512], setup[640];
+    enum launcher_fixes_start fix_start;
     int api;
 
     if (!file_exists( p->path ) || l->options->machine_of( p->path, &p->machine ))
@@ -2018,6 +2023,11 @@ static int start_program( struct launcher *l, struct program *p, char *target, s
     }
     /* Autorun ships no Windows DLLs: a card without them is offered them here. */
     if (!launcher_dlls_ready( l->dlls )) return 0;
+    /* A game with a fix in the game fixes repository is asked about it; one
+     * that was applied may have changed its settings, so they are read again. */
+    fix_start = launcher_fixes_before_start( l->fixes, p->title, p->path, setup, sizeof(setup) );
+    if (fix_start == LAUNCHER_FIXES_CANCEL) return 0;
+    if (fix_start == LAUNCHER_FIXES_APPLIED || fix_start == LAUNCHER_FIXES_SETUP) load_program_settings( l, p );
     api = game_settings_d3d_api( l->options->runtime_dir, p->path, p->machine );
     if (api < 0)
     {
@@ -2051,6 +2061,15 @@ static int start_program( struct launcher *l, struct program *p, char *target, s
     snprintf( target, size, "%s", p->path );
     runtime_file( l, "target.txt", path, sizeof(path) );
     write_line( path, target );
+    /* The fix's setup goes first, and the game after it from run-next.txt,
+     * when this runtime can start itself again. */
+    if (fix_start == LAUNCHER_FIXES_SETUP)
+    {
+        runtime_file( l, "run-next.txt", path, sizeof(path) );
+        if (!l->options->schedule_restart || !write_line( path, p->path ))
+            ui_message( ui, "Game fix", "The fix's setup runs now. Start the game again once it has finished." );
+        snprintf( target, size, "%s", setup );
+    }
     return 1;
 }
 
@@ -2357,7 +2376,7 @@ static int program_menu_run( struct launcher *l, struct program *p, char *target
     int ids[PROGRAM_ROWS + GAME_SETTINGS_MAX_ROWS], count, id, i;
     struct ui_list list = {0};
     struct ui *ui = &l->ui;
-    char path[520], dir[512], line[896], global_line[896], name[128], buffer[64];
+    char path[520], dir[512], line[896], global_line[896], name[128], buffer[64], fix_summary[640];
     struct program copy;
 
     for (;;)
@@ -2403,6 +2422,15 @@ static int program_menu_run( struct launcher *l, struct program *p, char *target
              snprintf( row->label, sizeof(row->label), "%s", (text) ); row->help = (help_text); } while (0)
 
         ADD_ROW( ROW_START, SECTION_GENERAL, "Start", "Runs the game." );
+        {
+            int tone;
+
+            ADD_ROW( ROW_GAME_FIX, SECTION_GENERAL, "Game fix", fix_summary );
+            if (launcher_fixes_status( l->fixes, p->path, fix_summary, sizeof(fix_summary),
+                                       row->value, sizeof(row->value), &tone ))
+                row->value_tone = tone;
+            else count--;
+        }
         ADD_ROW( ROW_FAVORITE, SECTION_GENERAL, "Favorite", "Keeps the game in the Favorites filter of the library." );
         row->kind = UI_ROW_SWITCH;
         row->on = p->favorite;
@@ -2673,6 +2701,14 @@ static int program_menu_run( struct launcher *l, struct program *p, char *target
                 break;
             }
             return start_program( l, p, target, size );
+
+        case ROW_GAME_FIX:
+            if (action != UI_ACTION_CHOOSE) break;
+            if (launcher_fixes_forget( l->fixes, p->path ))
+                ui_toast( ui, "The fix is offered the next time the game starts", 2500 );
+            else ui_toast( ui, "Could not save the program's settings", 2500 );
+            load_program_settings( l, p );
+            break;
 
         case ROW_FAVORITE:
             if (action != UI_ACTION_CHOOSE) break;
@@ -3009,9 +3045,10 @@ static int program_menu_run( struct launcher *l, struct program *p, char *target
 
                 if (index < 0) break;
                 save_library( l );
-                ui_toast( ui, "Added to the library", 1500 );
                 p = &l->programs[index];
                 apply_new_game_renderer( l, p );
+                ui_toast( ui, launcher_fixes_pending( l->fixes, p->path ) ?
+                          "Added. This game has a fix, offered when it starts" : "Added to the library", 2500 );
             }
             break;
         }
@@ -3861,7 +3898,8 @@ static int add_game( struct launcher *l )
     }
     apply_new_game_renderer( l, &l->programs[index] );
     launcher_log( "[LAUNCHER] Added %s to the library", path );
-    ui_toast( &l->ui, "Game added to the library", 1800 );
+    ui_toast( &l->ui, launcher_fixes_pending( l->fixes, path ) ?
+              "Game added. It has a fix, offered when it starts" : "Game added to the library", 2500 );
     return index;
 }
 
@@ -4240,13 +4278,30 @@ static void preload_art( struct launcher *l )
     }
 }
 
-/* What runs between frames: the release check and the DLL check. */
+/* What runs between frames: the release check, the DLL check and the game
+ * fixes check. */
 static void background_tick( void *data )
 {
     struct launcher *l = data;
 
     launcher_update_tick( l->update );
     launcher_dlls_tick( l->dlls );
+    if (launcher_fixes_tick( l->fixes )) l->fixes_notice = 1;
+    if (l->fixes_notice && !l->ui.modal_depth)
+    {
+        char text[96];
+        int i, pending = 0;
+
+        l->fixes_notice = 0;
+        for (i = 0; i < l->program_count; i++)
+            pending += l->programs[i].added && launcher_fixes_pending( l->fixes, l->programs[i].path );
+        if (pending == 1) ui_notice( &l->ui, "A game in your library has a new fix" );
+        else if (pending)
+        {
+            snprintf( text, sizeof(text), "%d games in your library have new fixes", pending );
+            ui_notice( &l->ui, text );
+        }
+    }
 }
 
 int wine_nx_launcher_run( struct wine_nx_launcher_options *options, char *target, size_t target_size )
@@ -4351,6 +4406,7 @@ int wine_nx_launcher_run( struct wine_nx_launcher_options *options, char *target
         ui_toast( &l->ui, "The update recovery files could not be cleared.", 5000 );
     l->update = launcher_update_create( &l->ui, options->runtime_dir, options->schedule_restart );
     l->dlls = launcher_dlls_create( &l->ui, options->runtime_dir );
+    l->fixes = launcher_fixes_create( &l->ui, options->runtime_dir );
     l->graphics = launcher_graphics_create( &l->ui, options->runtime_dir );
     l->ui.background_tick = background_tick;
     l->ui.background_data = l;
@@ -4362,6 +4418,8 @@ int wine_nx_launcher_run( struct wine_nx_launcher_options *options, char *target
     l->update = NULL;
     launcher_dlls_destroy( l->dlls );
     l->dlls = NULL;
+    launcher_fixes_destroy( l->fixes );
+    l->fixes = NULL;
     launcher_graphics_destroy( l->graphics );
     l->graphics = NULL;
     for (i = 0, added = 0, missing = 0; i < l->program_count; i++)

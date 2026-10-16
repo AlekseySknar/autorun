@@ -262,6 +262,7 @@ sh horizon-wine/check-amd64.sh                # AMD64, ARM64EC and both Box64 CP
 sh horizon-wine/check-audio.sh                # the audio driver
 sh horizon-wine/tests/check-launcher-host.sh  # the launcher, headless, with scripted input (Homebrew's sdl2, sdl3, sdl2_ttf, libpng)
 sh horizon-wine/tests/check-horizon-dlls.sh   # the DLL manager against the horizon-dlls checkout: install, resume, verify, update
+sh horizon-wine/tests/check-game-fixes.sh     # game fixes against the game-fixes checkout: match, download, apply, record, update
 for t in horizon-wine/tests/check_*.py; do python3 "$t"; done  # server pieces run against real host sockets and files
 ```
 

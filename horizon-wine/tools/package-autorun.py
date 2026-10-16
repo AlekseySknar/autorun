@@ -38,6 +38,8 @@ parser.add_argument('--amd64', type=Path,
 parser.add_argument('--x86', action='store_true', help='ship the x86-only runtime instead of the AMD64 one')
 parser.add_argument('--dlls', type=Path, default=root / 'horizon-dlls/switch/wine',
                     help="the DLL repository's card tree, to check the package against")
+parser.add_argument('--fixes', type=Path, default=root / 'game-fixes/switch/wine/game-fixes/index.json',
+                    help="the game fixes repository's index, shipped so a card offline knows of them")
 args = parser.parse_args()
 
 
@@ -78,130 +80,22 @@ drive = stage / 'drive_c'
 # before the first program on a card (source/runtime.c), for every game.
 compile_setup(tools / 'autorun_setup.c', drive / 'windows/autorun-setup.exe', '-lole32', '-ladvapi32')
 
-# WarCraft III: the game is the player's to copy into its folder; the setup
-# writes its settings into the card's registry.
-compile_setup(tools / 'war3_setup.c', drive / 'WarCraft III Setup/war3-setup.exe', '-ladvapi32')
+# Places to copy a game into. What a game needs beyond Autorun's own setup --
+# registry keys, settings files, controls -- comes from the game fixes
+# repository (autorun-game-fixes): the launcher recognises the game and offers
+# its fix before it starts. The archive ships the index it was built with, so a
+# card offline when a game starts still says the game has a fix to download.
 (drive / 'WarCraft III').mkdir()
-(drive / 'WarCraft III Setup/README.txt').write_text('''WarCraft III
-============
-
-1. Copy your own WarCraft III installation into switch/wine/drive_c/WarCraft III,
-   so the game is at switch/wine/drive_c/WarCraft III/war3.exe.
-2. Run war3-setup.exe once from the launcher and wait for it to finish. Run it
-   again after changing the resolution in the game's options.
-3. Start war3.exe through a forwarder set to a 36-bit or 39-bit address space.
-   With 32-bit its DLL layout changes from launch to launch and Game.dll
-   sometimes fails to load.
-
-The setup writes each step as a [WAR3 SETUP] line in autorun_runtime.log,
-ending with "done, all steps worked":
-- the game's video settings: 1280x720, 32-bit colour, 60 Hz, the Switch's own
-  screen, where the pointer and the touchscreen are;
-- the intro movie plays at startup;
-- the game draws with its own OpenGL renderer, which takes about half the CPU
-  its Direct3D does through Wine (a war3.args.txt holding -opengl next to
-  war3.exe does the same for one launch);
-- only the 1280x720 display mode is offered, so the movies fill the width.
-
-The movies play through DirectShow, which Autorun registers before the first
-program on the card.
-''')
-
-# The Sims 2 Ultimate Collection is shipped installed; what is left is telling
-# the game where each of its packs is, which its release does with a batch file
-# of reg add lines whose every path comes from the folder it is run in.
-sims2 = drive / 'The Sims 2 Setup'
-compile_setup(tools / 'sims2_setup.c', sims2 / 'sims2-setup.exe', '-ladvapi32')
-# DXVK's settings for the game, which the setup copies beside each executable.
-shutil.copy2(tools / 'sims2/dxvk.conf', sims2 / 'dxvk.conf')
-(sims2 / 'README.txt').write_text('''The Sims 2 Ultimate Collection
-==============================
-
-Copy the collection onto the card -- leave __Installer and Support behind, they
-are for a computer -- and run sims2-setup.exe once from the launcher. It writes
-what the release's own "Instalar Registros" batch file writes, with the card's
-paths, and says what it did in autorun_runtime.log as [SIMS2 SETUP] lines.
-Running it again is harmless.
-
-Where the packs go does not matter much. Each one is recognised by the
-executable in its TSBin, not by the name of the folder around it, so a release
-that calls them Base and EP1-EP9 and one that spells out "The Sims 2 Nightlife"
-both work, and the collection may keep a folder of its own around them. Put
-sims2-setup.exe's folder beside the packs, or beside the folder holding them.
-
-The setup also copies dxvk.conf from its folder into each pack's TSBin, next to
-the executable. It holds the game to 512 MB of video memory: DXVK's own profile
-for The Sims 2 reports 2 GB, and on the Switch the game fills the shared 1.5 GB
-and crashes. A dxvk.conf already in TSBin is left as it is.
-
-It also sets the game's own Graphics Rules.sgr (TSData\\Res\\Config in each pack)
-for the Switch's 1280x720 screen: in its screen resolution option every default
-becomes 1280x720, and a maximum below that is raised to it. Nothing else in the
-file changes, and the file as it was is kept as Graphics Rules.sgr.original.
-
-The game is the newest expansion's executable, TSBin\\Sims2EP9.exe. It has no
-relocations and is linked for 0x400000, so it requires the 39-bit Autorun
-forwarder and the Atmosphere low-address patch.
-
-The game's own movies -- the intro, the EA logo, what plays on a television --
-are .movie files in Maxis' own format, which the game reads itself: they need no
-codec and nothing registered.
-
-VP6 is for the video the game writes rather than the video it reads. It records
-gameplay through Video for Windows (AVIStreamWrite and ICSeqCompressFrame are
-what Sims2EP9.exe imports), and a custom video made as a VP6 AVI is read the
-same way. The codec is the release's to supply and nobody else's to give away:
-copy __Installer\\customcomponent\\vp6\\vp6vfw.dll into C:\\windows\\syswow64 on
-the card if you want either. The setup registers it under both the names Video
-for Windows opens it by, whether or not the file is there.
-
-The language number does two things: the game reads it, and so does the
-release's own launcher emulation, which anadius.cfg points at a key of its own
-by setting its language to "invalid". The setup writes both. Getting only the
-first is how the game comes up saying "open: Invalid handle" and stops.
-
-For a language other than English, put its number in language.txt beside
-sims2-setup.exe before running it:
-
-  1 English (United States)   10 Portuguese (Brazil)    17 Chinese (Simplified)
-  2 French                    11 Czech                  18 Chinese (Traditional)
-  3 German                    13 English (United Kingdom) 20 Polish
-  4 Italian                   14 Japanese               21 Thai
-  5 Spanish                   15 Korean                 22 Norwegian
-  6 Swedish                   16 Russian                23 Portuguese (Portugal)
-  7 Finnish                                             24 Hungarian
-  8 Dutch
-  9 Danish
-''')
 (drive / 'The Sims 2').mkdir()
+assert args.fixes.is_file(), f'{args.fixes} is missing; check out game-fixes'
+fixes_index = json.loads(args.fixes.read_text())
+assert fixes_index['schema'] == 1 and fixes_index['fixes'], f'{args.fixes} is not a game fixes index'
+(stage / 'game-fixes').mkdir()
+shutil.copy2(args.fixes, stage / 'game-fixes/bundled.json')
 
-# Guitar Hero III reads the key Aspyr's installer writes, with the game's folder
-# in it, so its setup goes in that folder and writes where it is.
-compile_setup(tools / 'gh3_setup.c', drive / 'Guitar Hero III/gh3-setup.exe', '-lshell32', '-ladvapi32')
-
-# Fallout New Vegas hands itself over to its own launcher unless it recognises
-# the card's display: FalloutNV.exe compares sD3DDevice with what adapter 0
-# calls itself, and with no FalloutPrefs.ini that default is the empty string,
-# which never matches. It then ShellExecutes FalloutNVLauncher.exe and returns.
-# The card gets the file the launcher would have written, naming the Switch's
-# adapter the way DXVK reports it, at 720p. The game rewrites this file itself
-# once its own options are used, so the values are a starting point, not a rule.
-fallout = stage / 'drive_c/users/steamuser/Documents/My Games/FalloutNV'
-fallout.mkdir(parents=True)
-(fallout / 'FalloutPrefs.ini').write_bytes('\r\n'.join((
-    '[Display]',
-    'sD3DDevice="NVIDIA Tegra X1 (GM20B) (NVK GM20B)"',
-    'iAdapter=0',
-    'iSize W=1280',
-    'iSize H=720',
-    'bFull Screen=1',
-    'iMultiSample=0',
-    '')).encode())
 
 # --- Settings ----------------------------------------------------------------
 
-# The launcher lists every program in drive_c; target.txt only preselects one.
-(stage / 'target.txt').write_text('sdmc:/switch/wine/drive_c/WarCraft III Setup/war3-setup.exe\n')
 config = stage / 'config'
 config.mkdir()
 (config / 'settings.json').write_text('''{
@@ -269,50 +163,37 @@ NRO of any earlier build. The Windows DLLs are not in this archive: Autorun
 downloads them itself (Settings, System, Windows DLLs), or copy the switch
 folder of autorun-horizon-dlls' release the same way.
 
-The launcher lists the programs in drive_c. Games that need something more:
+The launcher lists the programs in drive_c.
 
-WarCraft III: see drive_c/WarCraft III Setup/README.txt.
+Game fixes: some games need more than Autorun gives every program -- registry
+keys their installer would have written, a settings file their own launcher
+would have made, controls that suit them. Those come from the game fixes
+repository (github.com/autorunhq/autorun-game-fixes). When a game in the
+library has one, the launcher asks before the game starts, and says when the
+game may not start without it; the fix is downloaded, checked and applied, and
+the game starts after it. This archive knows which games have fixes even
+offline; applying one needs the internet once. WarCraft III, The Sims 2
+Ultimate Collection, Guitar Hero III and Halo have fixes. A game's Library
+settings show its fix, and choosing it asks again at the next
+start. Without a network, copy the switch folder of autorun-game-fixes to the
+card the same way as the DLLs.
 
-The Sims 2 Ultimate Collection: see drive_c/The Sims 2 Setup/README.txt.
+WarCraft III: start war3.exe through a forwarder set to a 36-bit or 39-bit
+address space. With 32-bit its DLL layout changes from launch to launch and
+Game.dll sometimes fails to load.
 
-Guitar Hero III: run gh3-setup.exe from the game's folder once.
+The Sims 2 Ultimate Collection: the game is the newest expansion's executable,
+TSBin\\Sims2EP9.exe. It cannot be moved in memory, so it needs the 39-bit
+Autorun forwarder and the Atmosphere low-address patch.
 
 Need for Speed Underground 2 and Most Wanted: neither executable can be moved in
 memory, so start them through a forwarder set to a 32-bit address space.
 
 Fallout New Vegas (GOG): its executable relocates, so it needs no forwarder.
-Started with no settings of its own the game hands itself to
-FalloutNVLauncher.exe and closes, so the archive brings the settings file it
-would have written:
-
-    C:\\users\\steamuser\\Documents\\My Games\\FalloutNV\\FalloutPrefs.ini
-
-It names the Switch's GPU as DXVK reports it, at 1280x720. The game rewrites
-that file once its own options are used; if it already holds settings worth
-keeping, keep the [Display] sD3DDevice line and merge the rest.
 
 Halo: Combat Evolved: delete the ._ files a Mac leaves beside every file on the
 card if the game was copied from one: Halo loads every DLL in its Controls
-folder and one of those is not a DLL. Halo walks with w, a, s and d and works
-its menus with the arrows, so the left stick takes one set and the d-pad the
-other. Put this beside HALO.EXE as HALO.keys.txt, which is applied over
-keys.txt:
-
-    LUP=0x57    w, forward: the left stick alone
-    LDOWN=0x53  s
-    LLEFT=0x41  a
-    LRIGHT=0x44 d
-    UP=0x26     the arrows, for the menus: the d-pad alone
-    DOWN=0x28
-    LEFT=0x25
-    RIGHT=0x27
-    X=0x0d      Enter, to choose a menu item
-    Y=0x20      space, to jump
-    L=0x45      e, the action key
-    R=0x52      r, to reload
-    ZL=0x11     left control, to crouch
-    ZR=0x09     tab, the scores
-    MINUS=0x1b  Escape, to go back
+folder and one of those is not a DLL.
 
 Left 4 Dead 2: left4dead2.exe relocates, so it needs no forwarder either.
 Steam's GameOverlayRenderer.dll not loading is expected and harmless.

@@ -31,6 +31,7 @@
 #include "launcher_ui.h"
 #include "launcher_update.h"
 #include "launcher_dlls.h"
+#include "launcher_fixes.h"
 #include "forwarder.h"
 #include "launcher_image.h"
 #include "dxvk_releases.h"
@@ -64,6 +65,18 @@ const char *launcher_dlls_status( struct launcher_dlls *dlls, char *buffer, size
 void launcher_dlls_destroy( struct launcher_dlls *dlls ) { (void)dlls; }
 int launcher_dlls_is_ready( struct launcher_dlls *dlls ) { (void)dlls; return 1; }
 int launcher_dlls_install( struct launcher_dlls *dlls ) { (void)dlls; return 1; }
+/* No game fixes on the host: launcher_fixes.c is tested on its own (check-game-fixes.sh). */
+struct launcher_fixes *launcher_fixes_create( struct ui *ui, const char *root ) { (void)ui; (void)root; return NULL; }
+int launcher_fixes_tick( struct launcher_fixes *fixes ) { (void)fixes; return 0; }
+const char *launcher_fixes_status( struct launcher_fixes *fixes, const char *exe_path, char *summary,
+                                   size_t summary_size, char *buffer, size_t size, int *tone )
+{ (void)fixes; (void)exe_path; (void)summary; (void)summary_size; (void)buffer; (void)size; (void)tone; return NULL; }
+int launcher_fixes_pending( struct launcher_fixes *fixes, const char *exe_path ) { (void)fixes; (void)exe_path; return 0; }
+int launcher_fixes_forget( struct launcher_fixes *fixes, const char *exe_path ) { (void)fixes; (void)exe_path; return 0; }
+enum launcher_fixes_start launcher_fixes_before_start( struct launcher_fixes *fixes, const char *title,
+                                                       const char *exe_path, char *setup, size_t size )
+{ (void)fixes; (void)title; (void)exe_path; (void)setup; (void)size; return LAUNCHER_FIXES_GAME; }
+void launcher_fixes_destroy( struct launcher_fixes *fixes ) { (void)fixes; }
 const char *launcher_dlls_describe( struct launcher_dlls *dlls, char *buffer, size_t size )
 {
     (void)dlls; (void)buffer; (void)size;

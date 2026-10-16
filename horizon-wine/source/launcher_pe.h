@@ -437,13 +437,20 @@ static inline const unsigned char *launcher_vs_next( const unsigned char *base, 
     return (size_t)(parent_end - base) < offset ? parent_end : base + offset;
 }
 
+/* Without regard to ASCII case, as VerQueryValue looks keys up. */
 static inline int launcher_vs_key_is( const struct launcher_vs_block *block, const char *key )
 {
     size_t i, len = strlen( key );
 
     if (block->key_chars != len) return 0;
     for (i = 0; i < len; i++)
-        if (launcher_u16( block->key + i * 2 ) != (unsigned char)key[i]) return 0;
+    {
+        unsigned int have = launcher_u16( block->key + i * 2 ), want = (unsigned char)key[i];
+
+        if (have >= 'A' && have <= 'Z') have += 'a' - 'A';
+        if (want >= 'A' && want <= 'Z') want += 'a' - 'A';
+        if (have != want) return 0;
+    }
     return 1;
 }
 

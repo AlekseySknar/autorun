@@ -543,6 +543,17 @@ static void hex( const unsigned char hash[32], char out[65] )
     out[64] = 0;
 }
 
+void horizon_dlls_sha256( const void *data, size_t size, char out[65] )
+{
+    unsigned char hash[32];
+    hash_context context;
+
+    hash_begin( &context );
+    hash_add( &context, data, size );
+    hash_end( &context, hash );
+    hex( hash, out );
+}
+
 /* The SHA-256 of a file on the card; 0 when it cannot be read. */
 static int hash_file( const char *path, char out[65], const char *what, unsigned long long *done,
                       unsigned long long total, horizon_dlls_progress progress, void *opaque, int *cancelled )

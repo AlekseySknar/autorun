@@ -13,6 +13,19 @@ the `horizon-dlls/` submodule. The launcher downloads them to the card, and a
 program starts only once the ones it needs are there and match this runtime's
 interfaces (`runtime-interfaces.json`).
 
+Per-game fixes live in the game fixes repository,
+[autorun-game-fixes](https://github.com/autorunhq/autorun-game-fixes), the
+`game-fixes/` submodule. Examples are the registry keys an installer would have
+written, a settings file a game's own launcher would make, or controls. The
+launcher (`source/launcher_fixes.c`, `source/game_fixes.c`) recognises a game by
+its executable and the files beside it. Before the game starts, it offers the
+fix and says when the game may not start without it. Then it downloads and
+checks the fix, applies it, and runs the fix's setup program ahead of the game
+through `run-next.txt`. The archive ships the index as
+`game-fixes/bundled.json`, so a card that is offline still knows which games
+have a fix. `tests/check-game-fixes.sh` tests all of this against the
+submodule.
+
 For how it all works, how to build it and what to run to test it, see
 [documentation/technical.md](../documentation/technical.md). For players, see
 the [README](../README.md).
@@ -53,9 +66,9 @@ The build folders (`build-*`, `toolchains/`, `vendor/`) are not tracked.
 
 | Path | Content |
 |---|---|
-| `source/` | The runtime: `runtime.c` (startup), `launcher*.c` (the SDL launcher and its screens), `compositor*.c`, the Box64 and FEX engines, audio, XInput, USB storage, the forwarder installer, `horizon_dlls*.c` (the DLL manager) and `autorun_update.c` (self-update) |
+| `source/` | The runtime: `runtime.c` (startup), `launcher*.c` (the SDL launcher and its screens), `compositor*.c`, the Box64 and FEX engines, audio, XInput, USB storage, the forwarder installer, `horizon_dlls*.c` (the DLL manager), `game_fixes.c` (game fixes) and `autorun_update.c` (self-update) |
 | `tests/` | Host tests of the runtime, the launcher and the Horizon server pieces |
-| `tools/` | The packagers and their check, Autorun's setup programs (`autorun_setup.c`, `war3_setup.c`, `sims2_setup.c`, `gh3_setup.c`), the Box64 bootstrap and `runtime_features.py`, which gives the features the DLL repository checks against |
+| `tools/` | The packagers and their check, Autorun's components setup (`autorun_setup.c`), the Box64 bootstrap and `runtime_features.py`, which gives the features the DLL repository checks against |
 | `cmake/` | The devkitA64 toolchain file, the Box64 core build and LSFG-VK |
 | `fex/` | The Horizon patch for FEX and the ABI the runtime shares with it; FEX's DLLs are built in the DLL repository |
 | `mesosphere/` | Patches for the Atmosphère/HOC boot payloads |

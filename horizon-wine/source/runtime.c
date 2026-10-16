@@ -52,6 +52,7 @@
 #include "dxvk_releases.h"
 #include "horizon_dlls.h"
 #include "horizon_dll_features.h"
+#include "game_fixes.h"
 #ifdef WINE_NX_SWAP_POC
 #include "swap_file.h"
 #include "horizon_swap.h"
@@ -1420,6 +1421,54 @@ static int read_first_line( const char *path, char *line, size_t size )
     fclose( file );
     trim_line( line );
     return line[0] != 0;
+}
+
+/* run-next.txt is a queue, a program to a line, started one after another by
+ * the runtime starting itself again: the components setup goes before a game
+ * fix's setup, which goes before its game. */
+#define RUN_NEXT WINE_NX_RUNTIME_ROOT "/run-next.txt"
+
+static int run_next_push( const char *target )
+{
+    char rest[2048];
+    size_t got = 0;
+    FILE *file = fopen( RUN_NEXT, "r" );
+    int ok;
+
+    if (file)
+    {
+        got = fread( rest, 1, sizeof(rest) - 1, file );
+        fclose( file );
+    }
+    rest[got] = 0;
+    if (!(file = fopen( RUN_NEXT, "w" ))) return 0;
+    ok = fprintf( file, "%s\n%s", target, rest ) > 0;
+    return !fclose( file ) && ok;
+}
+
+/* The first program in the queue, which leaves it. */
+static int run_next_pop( char *target, size_t size )
+{
+    char text[2048], *rest;
+    size_t got;
+    FILE *file = fopen( RUN_NEXT, "r" );
+
+    if (!file) return 0;
+    got = fread( text, 1, sizeof(text) - 1, file );
+    fclose( file );
+    text[got] = 0;
+    rest = text + strcspn( text, "\n" );
+    if (*rest) *rest++ = 0;
+    while (*rest == '\n' || *rest == '\r') rest++;
+    if (!*rest || !(file = fopen( RUN_NEXT, "w" ))) remove( RUN_NEXT );
+    else
+    {
+        fputs( rest, file );
+        fclose( file );
+    }
+    snprintf( target, size, "%s", text );
+    trim_line( target );
+    return target[0] != 0;
 }
 
 static int read_bool_file( const char *path )
@@ -3401,6 +3450,8 @@ static void release_thread_local_pages( void )
 #define COMPONENTS_SETUP   WINE_NX_RUNTIME_WINDOWS "/autorun-setup.exe"
 #define COMPONENTS_DONE    WINE_NX_RUNTIME_ROOT "/registry/components-1.done"
 static int runtime_components_run;
+/* The program this runtime started, for game_fixes_finish when it ends. */
+static char runtime_program[512];
 
 /* The exit code the program gave NtTerminateProcess (dlls/ntdll/unix/process.c);
  * ~0 while it has not ended by itself. */
@@ -3422,7 +3473,7 @@ static void run_components_first( char *target, size_t size )
                   "%s goes first", name ? name + 1 : target );
         return;
     }
-    if (!write_line( WINE_NX_RUNTIME_ROOT "/run-next.txt", target ))
+    if (!run_next_push( target ))
     {
         log_line( "[SETUP] could not write run-next.txt; the components setup waits for the next program" );
         return;
@@ -3592,6 +3643,15 @@ static int return_to_launcher( void )
         write_line( COMPONENTS_DONE, done );
         log_line( wine_nx_program_exit_code ? "[SETUP] Windows components set up, but a step failed (%s)"
                                             : "[SETUP] Windows components set up (%s)", done );
+    }
+    /* A game fix's setup: the game's settings say how it went, and the game
+     * is next in run-next.txt. */
+    {
+        char line[512];
+
+        if (runtime_program[0] &&
+            game_fixes_finish( RUNTIME_DIR, runtime_program, wine_nx_program_exit_code, line, sizeof(line) ))
+            log_line( "%s", line );
     }
     /* A program waiting in run-next.txt (after the components setup) is started
      * by the runtime started again, whether or not the launcher would be. */
@@ -3915,9 +3975,8 @@ int main( int argc, char **argv )
         launch_error = "The shortcut's game is unavailable. Connect its USB drive or use Locate executable in the game's Library settings.";
         forwarded_game = -1;
     }
-    if (!forwarded_game && read_first_line( WINE_NX_RUNTIME_ROOT "/run-next.txt", target, sizeof(target) ) && target[0])
+    if (!forwarded_game && run_next_pop( target, sizeof(target) ))
     {
-        remove( WINE_NX_RUNTIME_ROOT "/run-next.txt" );
         autorun = resumed_program = 1;
         log_line( "[SETUP] resuming %s", target );
     }
@@ -3940,6 +3999,34 @@ int main( int argc, char **argv )
             forwarded_game = -1;
             resumed_program = autorun = 0;
         }
+    }
+    /* A game started from its forwarder never meets the launcher, which is
+     * what asks about its fix: one it may not start without, not applied, has
+     * it open the launcher instead. */
+    if (forwarded_game > 0)
+    {
+        static char fix_error[256];
+        struct game_fixes_index fixes;
+        struct game_fix_state state;
+        const struct game_fix *fix;
+
+        if (game_fixes_load( RUNTIME_DIR, &fixes ) == HORIZON_DLLS_OK &&
+            (fix = game_fixes_match( &fixes, target )))
+        {
+            enum game_fix_need need;
+
+            game_fixes_state( RUNTIME_DIR, target, &state );
+            need = game_fixes_need( fix, &state );
+            if (fix->required && need != GAME_FIX_APPLIED && need != GAME_FIX_SKIPPED)
+            {
+                log_line( "[FIXES] %s %u is not applied to %s; the launcher offers it", fix->id, fix->version, target );
+                snprintf( fix_error, sizeof(fix_error), "%s has a game fix it may not start without. Start it "
+                          "from the library once to apply it.", fix->title );
+                launch_error = fix_error;
+                forwarded_game = -1;
+            }
+        }
+        game_fixes_free( &fixes );
     }
     if (forwarded_game > 0 || resumed_program || (!forwarded_game && argc > 1 && argv[1] && argv[1][0]))
     {
@@ -4042,6 +4129,7 @@ int main( int argc, char **argv )
     }
 
     run_components_first( target, sizeof(target) );
+    snprintf( runtime_program, sizeof(runtime_program), "%s", target );
 
     /* From here a thread may be asked to end; this one comes back here. */
     if (setjmp( quit_jump )) return return_to_launcher();

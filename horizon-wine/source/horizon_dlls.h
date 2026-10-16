@@ -210,6 +210,8 @@ enum horizon_dlls_result horizon_dlls_apply_bundle( const char *root, const stru
 int horizon_dlls_ready( const char *root, const char *const *features, size_t feature_count,
                         char *why, size_t why_size );
 const char *horizon_dlls_error( enum horizon_dlls_result result );
+/* The SHA-256 of data, as 64 lowercase hex digits. */
+void horizon_dlls_sha256( const void *data, size_t size, char out[65] );
 /* A category's name as a player reads it: "directx-graphics" is DirectX graphics. */
 const char *horizon_dlls_category_title( const char *key, char *buffer, size_t size );
 

@@ -60,9 +60,6 @@ syswow64 = {p.name.lower() for p in (dlls / "drive_c/windows/syswow64").iterdir(
 setups = {
     # What the runtime runs before the first program on a card.
     "drive_c/windows/autorun-setup.exe": ("OleInitialize", "LoadLibraryExW", "RegSetValueExW", "NtDisplayString"),
-    "drive_c/WarCraft III Setup/war3-setup.exe": ("RegSetValueExW", "RegDeleteValueW", "NtDisplayString"),
-    "drive_c/The Sims 2 Setup/sims2-setup.exe": ("RegSetValueExW", "NtDisplayString"),
-    "drive_c/Guitar Hero III/gh3-setup.exe": ("RegSetValueExW", "NtDisplayString"),
 }
 for path, symbols in setups.items():
     info = inspect(stage / path, "--coff-imports")
@@ -79,10 +76,17 @@ for folder in ("drive_c/WarCraft III", "drive_c/The Sims 2"):
     assert (stage / folder).is_dir(), f"{folder} is where the player copies the game"
 
 assert (stage / "wine-nx-runtime.nro").read_bytes()[16:20] == b"NRO0"
-target = (stage / "target.txt").read_text().strip()
-assert target.startswith("sdmc:/switch/wine/drive_c/") and (stage / target[len("sdmc:/switch/wine/"):]).is_file(), \
-    f"target.txt names {target}, which the package does not hold"
+# target.txt only preselects a program, and the package has none to preselect.
+if (stage / "target.txt").exists():
+    target = (stage / "target.txt").read_text().strip()
+    assert target.startswith("sdmc:/switch/wine/drive_c/") and (stage / target[len("sdmc:/switch/wine/"):]).is_file(), \
+        f"target.txt names {target}, which the package does not hold"
 assert not (stage / "args.txt").exists(), "args.txt would apply to whatever program it names"
+# The game fixes the launcher knows of offline; the fixes themselves are downloaded.
+fixes = json.loads((stage / "game-fixes/bundled.json").read_text())
+assert fixes["schema"] == 1 and fixes["serial"] >= 1 and fixes["fixes"], "game-fixes/bundled.json is not an index"
+assert not (stage / "game-fixes/index.json").exists(), "index.json is the card's download; the archive ships bundled.json"
+
 # One settings file, where a dozen loose toggles were, and the keys beside it.
 settings = json.loads((stage / "config/settings.json").read_text())
 assert settings["run-the-chosen-program"] is True

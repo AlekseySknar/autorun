@@ -25,6 +25,10 @@ copies to the SD card and start them from Autorun's library.
 - **Frame generation** with [LSFG-VK](https://git.lsfg-vk.dev/lsfg-vk-archive.git),
   for Vulkan games, with your own copy of Lossless Scaling.
 - **The Windows DLLs games need** are downloaded and kept up to date by the app.
+- **Game fixes**: the app recognises games that need extra setup on the Switch
+  (WarCraft III, The Sims 2, Guitar Hero III and others) and offers their fix,
+  from [autorun-game-fixes](https://github.com/autorunhq/autorun-game-fixes),
+  before the game starts.
 - **USB drives** show up in games as drives D: to H:.
 - **A launcher** with artwork, per-game settings, controls and HOME menu
   shortcuts for games.

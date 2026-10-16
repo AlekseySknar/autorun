@@ -29,7 +29,9 @@
 #define WINE_NX_GAME_FIXES_H
 
 #include <stddef.h>
+#include <stdint.h>
 #include "horizon_dlls.h"
+#include "game_settings.h"
 
 #define GAME_FIXES_RAW       "https://raw.githubusercontent.com/autorunhq/autorun-game-fixes/main/switch/wine/game-fixes/"
 #define GAME_FIXES_INDEX_URL GAME_FIXES_RAW "index.json"
@@ -132,12 +134,34 @@ struct game_fix
     struct game_fix_settings_file game_settings;
 };
 
+/* A settings profile from the repository: what the launcher's game settings
+ * screen shows and the runtime writes for a game (game_settings.h), for games
+ * this runtime has no profile built in for. Unlike a fix it is not asked about:
+ * a built-in profile is not either. Its id, version and the game it is for are
+ * the repository's; profile is ready for game_settings_open, its strings and
+ * arrays owned here. Each is allocated on its own, so profile stays where it is. */
+#define GAME_PROFILE_ROWS (GAME_SETTINGS_MAX_ROWS - 1)
+struct game_fixes_profile
+{
+    char id[32];
+    unsigned int version;
+    struct game_fix match;      /* only its exes, versions, builds and marks */
+    struct game_settings_profile profile;
+    struct game_setting rows[GAME_PROFILE_ROWS];
+    const char *presets[4];
+    const char *help[GAME_PROFILE_ROWS];
+    void **owned;
+    unsigned int owned_count, owned_capacity;
+};
+
 struct game_fixes_index
 {
     int schema;
     unsigned int serial;
     struct game_fix *fixes;
     unsigned int count, capacity;
+    struct game_fixes_profile **profiles;
+    unsigned int profile_count, profile_capacity, profiles_skipped;
     /* Fixes this Autorun cannot read -- past its limits, or with something a
      * later build added -- which it leaves out rather than apply in part. */
     unsigned int skipped;
@@ -178,6 +202,13 @@ void game_fixes_free( struct game_fixes_index *index );
  * one build over a fix for every build. */
 const struct game_fix *game_fixes_match( const struct game_fixes_index *index, const char *exe_path );
 const struct game_fix *game_fixes_find( const struct game_fixes_index *index, const char *id );
+/* The repository's settings profile for the game, for the machine it is built for, or NULL. */
+const struct game_fixes_profile *game_fixes_match_profile( const struct game_fixes_index *index, const char *exe_path,
+                                                           uint16_t machine );
+/* Offer the card's settings profiles to game_settings_find, for games with no
+ * built-in one. The index is read once and kept for the life of the process,
+ * so a profile handed out stays valid. */
+void game_fixes_install_profiles( const char *root );
 
 void game_fixes_state( const char *root, const char *exe_path, struct game_fix_state *state );
 enum game_fix_need game_fixes_need( const struct game_fix *fix, const struct game_fix_state *state );

@@ -133,12 +133,12 @@ static void serve_index( const char *find, const char *replace, unsigned int ser
     else strcpy( out, text );
     CHECK( (serial_at = strstr( out, "\"serial\": " )) );
     {
-        char rest[65536];
-        char *end = serial_at + strlen( "\"serial\": " );
+        char *end = serial_at + strlen( "\"serial\": " ), *rest;
 
         while (*end >= '0' && *end <= '9') end++;
-        snprintf( rest, sizeof(rest), "%s", end );
+        CHECK( (rest = strdup( end )) );
         sprintf( serial_at, "\"serial\": %u%s", serial, rest );
+        free( rest );
     }
     snprintf( path, sizeof(path), "%s/index.json", served );
     put( path, out );
@@ -443,7 +443,52 @@ int main( int argc, char **argv )
         game_fixes_free( &own );
     }
 
+    /* Settings profiles: offered to game_settings_find for games with none
+     * built in, written by the engine when such a game starts, and never over
+     * a built-in one, even when the index has a copy of it. */
+    {
+        static const char extra[] =
+            "\"profiles\": [{\"id\": \"test-game\", \"version\": 1, \"match\": {\"exe\": [\"Test.exe\"]},"
+            " \"machine\": \"x86\", \"path\": \"{drive_c}/users/steamuser/Documents/Test/test.ini\","
+            " \"format\": \"ini\", \"initial_text\": \"[Video]\\r\\nGamma=1\\r\\n\","
+            " \"rows\": [{\"section\": \"Video\", \"key\": \"Width\", \"label\": \"Width\", \"type\": \"integer\","
+            " \"initial\": \"1280\"}]},";
+        const struct game_settings_profile *profile;
+        char *index_text, *at, *joined;
+        size_t size;
+
+        snprintf( path, sizeof(path), "%s/index.json", repo );
+        CHECK( (index_text = slurp( path, &size )) && (at = strstr( index_text, "\"profiles\": [" )) );
+        CHECK( (joined = malloc( size + sizeof(extra) + 64 )) );
+        sprintf( joined, "%.*s%s%s", (int)(at - index_text), index_text, extra, at + strlen( "\"profiles\": [" ) );
+        /* Newer than anything else on the card. */
+        CHECK( (at = strstr( joined, "\"serial\": " )) );
+        {
+            char *digits = at + strlen( "\"serial\": " ), *end = digits, *spliced;
+
+            while (*end >= '0' && *end <= '9') end++;
+            CHECK( (spliced = malloc( strlen( joined ) + 16 )) );
+            sprintf( spliced, "%.*s9999%s", (int)(digits - joined), joined, end );
+            put( ROOT "/" GAME_FIXES_INDEX, spliced );
+            free( spliced );
+        }
+        free( joined );
+        free( index_text );
+
+        game_fixes_install_profiles( ROOT );
+        put( DRIVE_C "/Test/Test.exe", "MZ" );
+        CHECK( (profile = game_settings_find( DRIVE_C "/Test/Test.exe", 0x014c )) );
+        CHECK( !strcmp( profile->path, "drive_c/users/steamuser/Documents/Test/test.ini" ) && profile->count == 1 );
+        CHECK( !game_settings_find( DRIVE_C "/Test/Test.exe", 0x8664 ) );
+        CHECK( game_settings_find( DRIVE_C "/FNV/FalloutNV.exe", 0x014c ) ==
+               game_settings_find_builtin( DRIVE_C "/FNV/FalloutNV.exe", 0x014c ) );
+        CHECK( game_settings_prepare( ROOT, DRIVE_C "/Test/Test.exe", 0x014c ) );
+        CHECK( (text = slurp( DRIVE_C "/users/steamuser/Documents/Test/test.ini", NULL )) );
+        CHECK( strstr( text, "Width=1280" ) && strstr( text, "Gamma=1" ) );
+        free( text );
+    }
+
     printf( "game fixes: index read and kept, games matched by name, files, version strings and build, "
-            "files checked and put in place, the game's own settings file, setups prepared and recorded, updates and skips\n" );
+            "files checked and put in place, the game's own settings file, settings profiles, setups prepared and recorded, updates and skips\n" );
     return 0;
 }

@@ -282,17 +282,44 @@ static int config_set( struct game_settings *settings, const char *section, cons
 
 #include "games/ff7remake_settings.h"
 
-const struct game_settings_profile *game_settings_find( const char *target, uint16_t machine )
+/* The profiles built into this runtime. */
+static const struct game_settings_profile *const game_settings_builtin[] = {
+    &fallout3_profile, &fallout4_profile, &falloutnv_profile, &moha_profile, &spiderman_wos_profile,
+    &ff7remake_profile
+};
+
+const struct game_settings_profile *game_settings_find_builtin( const char *target, uint16_t machine )
 {
-    static const struct game_settings_profile *const profiles[] = {
-        &fallout3_profile, &fallout4_profile, &falloutnv_profile, &moha_profile, &spiderman_wos_profile,
-        &ff7remake_profile
-    };
     const char *name = target;
 
     for (const char *p = target; *p; p++) if (*p == '/' || *p == '\\') name = p + 1;
-    for (unsigned int i = 0; i < sizeof(profiles) / sizeof(profiles[0]); i++)
-        if (profiles[i]->machine == machine && !strcasecmp( name, profiles[i]->executable )) return profiles[i];
+    for (unsigned int i = 0; i < sizeof(game_settings_builtin) / sizeof(game_settings_builtin[0]); i++)
+        if (game_settings_builtin[i]->machine == machine && !strcasecmp( name, game_settings_builtin[i]->executable ))
+            return game_settings_builtin[i];
+    return NULL;
+}
+
+/* Profiles from elsewhere -- the game fixes repository's (game_fixes.c) -- for
+ * games this runtime has none built in for. A built-in profile always wins. */
+static const struct game_settings_profile *(*game_settings_provider)( const char *target, uint16_t machine );
+
+void game_settings_set_provider( const struct game_settings_profile *(*provider)( const char *target, uint16_t machine ) )
+{
+    game_settings_provider = provider;
+}
+
+const struct game_settings_profile *game_settings_find( const char *target, uint16_t machine )
+{
+    const struct game_settings_profile *profile = game_settings_find_builtin( target, machine );
+
+    if (!profile && game_settings_provider) profile = game_settings_provider( target, machine );
+    return profile;
+}
+
+/* An update hook by the name a profile from elsewhere gives it. */
+game_settings_update_fn game_settings_update_hook( const char *name )
+{
+    if (name && !strcmp( name, "ff7remake" )) return ff7remake_update;
     return NULL;
 }
 

@@ -59,6 +59,11 @@ struct reading
     struct game_fix *fix;
     int bad;
     char run[64];
+    /* A settings profile being read, and the row and choice in it. */
+    struct game_fixes_profile *profile;
+    struct game_setting *row;
+    unsigned int preset;
+    unsigned int choice_slot, choice_capacity;  /* where the row's choices are in owned */
 };
 
 /* A string too long for where it goes is passed over whole, so the rest of the
@@ -462,6 +467,282 @@ static int read_fix( struct parser *p, void *data )
     return 1;
 }
 
+/***********************************************************************
+ * Reading settings profiles
+ */
+
+/* As many as a resolution list has, and more. */
+#define PROFILE_CHOICES 256
+
+static void *own_block( struct game_fixes_profile *g, size_t size )
+{
+    void *block;
+
+    if (g->owned_count == g->owned_capacity)
+    {
+        unsigned int capacity = g->owned_capacity ? g->owned_capacity * 2 : 32;
+        void **grown = realloc( g->owned, capacity * sizeof(*grown) );
+
+        if (!grown) return NULL;
+        g->owned = grown;
+        g->owned_capacity = capacity;
+    }
+    if (!(block = calloc( 1, size ))) return NULL;
+    g->owned[g->owned_count++] = block;
+    return block;
+}
+
+static void profile_free( struct game_fixes_profile *g )
+{
+    unsigned int i;
+
+    if (!g) return;
+    for (i = 0; i < g->owned_count; i++) free( g->owned[i] );
+    free( g->owned );
+    free( g );
+}
+
+/* A string the profile keeps, shorter than max; null too when nullable. Only
+ * running out of memory stops the index. */
+static int profile_string( struct parser *p, struct reading *r, const char **out, size_t max, int nullable )
+{
+    const unsigned char *start;
+    char scratch[4096], *copy;
+    size_t length;
+
+    whitespace( p );
+    start = p->p;
+    if (nullable && json_null( p )) { *out = NULL; return 1; }
+    if (p->p == p->end || *p->p != '"') { r->bad = 1; return skip_value( p ); }
+    if (!json_string( p, scratch, sizeof(scratch) ) || (length = strlen( scratch )) >= max)
+    {
+        r->bad = 1;
+        p->p = start;
+        return skip_string( p );
+    }
+    if (!(copy = own_block( r->profile, length + 1 ))) return 0;
+    memcpy( copy, scratch, length + 1 );
+    *out = copy;
+    return 1;
+}
+
+static int read_row_preset( struct parser *p, void *data )
+{
+    struct reading *r = data;
+
+    if (r->preset >= 4) { r->bad = 1; return skip_value( p ); }
+    return profile_string( p, r, &r->row->presets[r->preset++], GAME_SETTINGS_VALUE_SIZE, 1 );
+}
+
+static int read_choice_field( struct parser *p, const char *key, void *data )
+{
+    struct reading *r = data;
+    struct game_setting_choice *choice = (struct game_setting_choice *)&r->row->choices[r->row->choice_count];
+
+    if (!strcmp( key, "label" )) return profile_string( p, r, &choice->label, 64, 0 );
+    if (!strcmp( key, "value" )) return profile_string( p, r, &choice->value, GAME_SETTINGS_VALUE_SIZE, 1 );
+    r->bad = 1;
+    return skip_value( p );
+}
+
+static int read_choice( struct parser *p, void *data )
+{
+    struct reading *r = data;
+    struct game_fixes_profile *g = r->profile;
+
+    if (r->row->choice_count >= PROFILE_CHOICES) { r->bad = 1; return skip_value( p ); }
+    /* The row's choices grow where the profile keeps them. */
+    if (r->row->choice_count == r->choice_capacity)
+    {
+        unsigned int capacity = r->choice_capacity * 2;
+        struct game_setting_choice *grown = realloc( g->owned[r->choice_slot], capacity * sizeof(*grown) );
+
+        if (!grown) return 0;
+        memset( grown + r->choice_capacity, 0, (capacity - r->choice_capacity) * sizeof(*grown) );
+        g->owned[r->choice_slot] = grown;
+        r->row->choices = grown;
+        r->choice_capacity = capacity;
+    }
+    if (!object( p, read_choice_field, data )) return 0;
+    if (!r->row->choices[r->row->choice_count].label) { r->bad = 1; return 1; }
+    r->row->choice_count++;
+    return 1;
+}
+
+static int read_profile_row_field( struct parser *p, const char *key, void *data )
+{
+    struct reading *r = data;
+    struct game_setting *row = r->row;
+    unsigned int index = row - r->profile->rows;
+
+    /* An XML file's settings have no section. */
+    if (!strcmp( key, "section" )) return profile_string( p, r, &row->section, 64, 1 );
+    if (!strcmp( key, "key" )) return profile_string( p, r, &row->key, 64, 0 );
+    if (!strcmp( key, "key2" )) return profile_string( p, r, &row->key2, 64, 0 );
+    if (!strcmp( key, "label" )) return profile_string( p, r, &row->label, 96, 0 );
+    if (!strcmp( key, "initial" )) return profile_string( p, r, &row->initial, GAME_SETTINGS_VALUE_SIZE, 1 );
+    if (!strcmp( key, "help" )) return profile_string( p, r, &r->profile->help[index], 256, 0 );
+    if (!strcmp( key, "presets" )) { r->preset = 0; return array( p, read_row_preset, data ); }
+    if (!strcmp( key, "choices" ))
+    {
+        if (row->choices) { r->bad = 1; return skip_value( p ); }
+        if (!(row->choices = own_block( r->profile, 8 * sizeof(*row->choices) ))) return 0;
+        r->choice_slot = r->profile->owned_count - 1;
+        r->choice_capacity = 8;
+        return array( p, read_choice, data );
+    }
+    if (!strcmp( key, "type" ))
+    {
+        static const char *const types[] = { "number", "integer", "text", "resolution", "d3d_api" };
+        char type[16] = "";
+        unsigned int i;
+
+        if (!string_or_bad( p, r, type, sizeof(type) )) return 0;
+        for (i = 0; i < sizeof(types) / sizeof(types[0]); i++)
+            if (!strcmp( type, types[i] )) { row->type = (enum game_setting_type)i; return 1; }
+        r->bad = 1;
+        return 1;
+    }
+    r->bad = 1;
+    return skip_value( p );
+}
+
+static int read_profile_row( struct parser *p, void *data )
+{
+    struct reading *r = data;
+    struct game_fixes_profile *g = r->profile;
+
+    if (g->profile.count >= GAME_PROFILE_ROWS) { r->bad = 1; return skip_value( p ); }
+    r->row = &g->rows[g->profile.count];
+    r->row->type = GAME_SETTING_TEXT;
+    if (!object( p, read_profile_row_field, data )) return 0;
+    if (!r->row->key || !r->row->label ||
+        (r->row->type == GAME_SETTING_RESOLUTION && !r->row->key2) ||
+        (!r->row->choices && r->row->choice_count)) { r->bad = 1; return 1; }
+    if (!r->row->choice_count) r->row->choices = NULL;
+    g->profile.count++;
+    return 1;
+}
+
+static int read_profile_preset( struct parser *p, void *data )
+{
+    struct reading *r = data;
+    struct game_fixes_profile *g = r->profile;
+
+    if (g->profile.preset_count >= 4) { r->bad = 1; return skip_value( p ); }
+    if (!profile_string( p, r, &g->presets[g->profile.preset_count], 32, 0 )) return 0;
+    if (g->presets[g->profile.preset_count]) g->profile.preset_count++;
+    return 1;
+}
+
+static int read_pending( struct parser *p, void *data )
+{
+    struct reading *r = data;
+
+    if (r->preset >= 2) { r->bad = 1; return skip_value( p ); }
+    return profile_string( p, r, &r->profile->profile.pending_resolution[r->preset++], 64, 0 );
+}
+
+static int read_profile_field( struct parser *p, const char *key, void *data )
+{
+    struct reading *r = data;
+    struct game_fixes_profile *g = r->profile;
+    const char *text = NULL;
+
+    if (!strcmp( key, "id" )) return string_or_bad( p, r, g->id, sizeof(g->id) );
+    if (!strcmp( key, "version" )) { g->version = uint_or_bad( p, r ); return 1; }
+    if (!strcmp( key, "match" )) return object( p, read_match_field, data );
+    if (!strcmp( key, "rows" )) return array( p, read_profile_row, data );
+    if (!strcmp( key, "presets" )) return array( p, read_profile_preset, data );
+    if (!strcmp( key, "pending_resolution" )) { r->preset = 0; return array( p, read_pending, data ); }
+    if (!strcmp( key, "initial_text" )) return profile_string( p, r, &g->profile.initial_text, 4096, 0 );
+    if (!strcmp( key, "arguments" )) return profile_string( p, r, &g->profile.arguments, 1024, 0 );
+    if (!strcmp( key, "path" ))
+    {
+        /* Under drive_c, which is where the engine opens it from the runtime's folder. */
+        if (!profile_string( p, r, &text, 256, 0 )) return 0;
+        if (text && (strncmp( text, "{drive_c}/", 10 ) || !valid_relative( text + 10, 0 ))) r->bad = 1;
+        else if (text)
+        {
+            char *path = own_block( g, strlen( text ) );
+
+            if (!path) return 0;
+            snprintf( path, strlen( text ), "drive_c/%s", text + 10 );
+            g->profile.path = path;
+        }
+        return 1;
+    }
+    if (!strcmp( key, "machine" ) || !strcmp( key, "format" ) || !strcmp( key, "update" ))
+    {
+        char value[32] = "";
+
+        if (!string_or_bad( p, r, value, sizeof(value) )) return 0;
+        if (key[0] == 'm')
+        {
+            if (!strcmp( value, "x86" )) g->profile.machine = 0x014c;
+            else if (!strcmp( value, "x64" )) g->profile.machine = 0x8664;
+            else r->bad = 1;
+        }
+        else if (key[0] == 'f')
+        {
+            if (!strcmp( value, "xml" )) g->profile.format = GAME_SETTINGS_XML;
+            else if (strcmp( value, "ini" )) r->bad = 1;
+        }
+        /* A hook this build does not have: the profile would be half of itself. */
+        else if (!(g->profile.update = game_settings_update_hook( value ))) r->bad = 1;
+        return 1;
+    }
+    r->bad = 1;
+    return skip_value( p );
+}
+
+static int read_profile( struct parser *p, void *data )
+{
+    struct game_fixes_index *index = data;
+    struct game_fixes_profile *g;
+    struct reading r = {0};
+    unsigned int i;
+    const char *c;
+
+    if (index->profile_count == index->profile_capacity)
+    {
+        unsigned int capacity = index->profile_capacity ? index->profile_capacity * 2 : 16;
+        struct game_fixes_profile **grown = realloc( index->profiles, capacity * sizeof(*grown) );
+
+        if (!grown) return 0;
+        index->profiles = grown;
+        index->profile_capacity = capacity;
+    }
+    if (!(g = calloc( 1, sizeof(*g) ))) return 0;
+    g->match.run = -1;
+    r.fix = &g->match;
+    r.profile = g;
+    if (!object( p, read_profile_field, &r )) { profile_free( g ); return 0; }
+
+    for (c = g->id; *c; c++)
+        if (!islower( (unsigned char)*c ) && !isdigit( (unsigned char)*c ) && *c != '-') r.bad = 1;
+    if (!g->id[0] || !g->version || (!g->match.exe_count && !g->match.version_count) ||
+        !g->profile.machine || !g->profile.path || !g->profile.count) r.bad = 1;
+    for (i = 0; i < g->profile.count && !r.bad; i++)
+        if (g->profile.format == GAME_SETTINGS_INI && !g->rows[i].section) r.bad = 1;
+    for (i = 0; i < index->profile_count && !r.bad; i++)
+        if (!strcmp( index->profiles[i]->id, g->id )) r.bad = 1;
+    if (r.bad)
+    {
+        profile_free( g );
+        index->profiles_skipped++;
+        return 1;
+    }
+    /* The engine's view of it: what it shows, what it writes and where. */
+    g->profile.executable = g->match.exe_count ? g->match.exes[0] : g->id;
+    g->profile.settings = g->rows;
+    if (g->profile.preset_count) g->profile.presets = g->presets;
+    for (i = 0; i < g->profile.count; i++)
+        if (g->help[i]) g->profile.help = g->help;
+    index->profiles[index->profile_count++] = g;
+    return 1;
+}
+
 static int read_top( struct parser *p, const char *key, void *data )
 {
     struct game_fixes_index *index = data;
@@ -475,6 +756,7 @@ static int read_top( struct parser *p, const char *key, void *data )
         return 1;
     }
     if (!strcmp( key, "fixes" )) return array( p, read_fix, data );
+    if (!strcmp( key, "profiles" )) return array( p, read_profile, data );
     return skip_value( p );
 }
 
@@ -499,6 +781,10 @@ enum horizon_dlls_result game_fixes_parse( const char *text, size_t size, struct
 
 void game_fixes_free( struct game_fixes_index *index )
 {
+    unsigned int i;
+
+    for (i = 0; i < index->profile_count; i++) profile_free( index->profiles[i] );
+    free( index->profiles );
     free( index->fixes );
     memset( index, 0, sizeof(*index) );
 }
@@ -862,6 +1148,46 @@ const struct game_fix *game_fixes_match( const struct game_fixes_index *index, c
         }
     free( info.version );
     return best;
+}
+
+const struct game_fixes_profile *game_fixes_match_profile( const struct game_fixes_index *index, const char *exe_path,
+                                                           uint16_t machine )
+{
+    const struct game_fixes_profile *best = NULL;
+    struct exe_info info = {0};
+    int best_score = 0, score;
+    unsigned int i;
+
+    for (i = 0; i < index->profile_count; i++)
+        if (index->profiles[i]->profile.machine == machine &&
+            (score = fix_score( &index->profiles[i]->match, exe_path, &info )) > best_score)
+        {
+            best = index->profiles[i];
+            best_score = score;
+        }
+    free( info.version );
+    return best;
+}
+
+/* The card's index for game_settings_find, read once and never freed: the
+ * launcher's settings screen and the runtime hold the profiles it hands out. */
+static struct game_fixes_index installed_profiles;
+
+static const struct game_settings_profile *installed_profile( const char *target, uint16_t machine )
+{
+    const struct game_fixes_profile *found = game_fixes_match_profile( &installed_profiles, target, machine );
+
+    return found ? &found->profile : NULL;
+}
+
+void game_fixes_install_profiles( const char *root )
+{
+    static int installed;
+
+    if (installed) return;
+    installed = 1;
+    if (game_fixes_load( root, &installed_profiles ) != HORIZON_DLLS_OK) return;
+    if (installed_profiles.profile_count) game_settings_set_provider( installed_profile );
 }
 
 const struct game_fix *game_fixes_find( const struct game_fixes_index *index, const char *id )

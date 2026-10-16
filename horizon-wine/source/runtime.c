@@ -3971,6 +3971,10 @@ int main( int argc, char **argv )
         wine_nx_usb_wait();
     }
 #endif
+    /* Settings profiles from the game fixes repository, for games with none
+     * built in: the launcher's settings screen and the start of a game both
+     * find them through game_settings_find. */
+    game_fixes_install_profiles( RUNTIME_DIR );
     forwarded_game = runtime_forwarded_game( target, sizeof(target) );
     if (forwarded_game < 0) launch_error = "This shortcut no longer matches a game in the library. Create it again from the game's Library settings.";
     else if (forwarded_game > 0 && access( target, R_OK ))

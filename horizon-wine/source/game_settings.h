@@ -28,6 +28,8 @@ struct game_setting
 
 struct game_settings;
 
+typedef int (*game_settings_update_fn)( struct game_settings *settings, unsigned int index, const char *value );
+
 struct game_settings_profile
 {
     const char *executable;
@@ -41,11 +43,15 @@ struct game_settings_profile
     const char *initial_text;
     const char *pending_resolution[2];
     const char *arguments;
-    int (*update)( struct game_settings *settings, unsigned int index, const char *value );
+    game_settings_update_fn update;
     const char *const *help;
 };
 
+/* A built-in profile, or else one from the provider. */
 const struct game_settings_profile *game_settings_find( const char *target, uint16_t machine );
+const struct game_settings_profile *game_settings_find_builtin( const char *target, uint16_t machine );
+void game_settings_set_provider( const struct game_settings_profile *(*provider)( const char *target, uint16_t machine ) );
+game_settings_update_fn game_settings_update_hook( const char *name );
 int game_settings_d3d_api( const char *root, const char *target, uint16_t machine );
 int game_settings_append_arguments( const char *root, const char *target, uint16_t machine,
                                     char *command_line, size_t size );

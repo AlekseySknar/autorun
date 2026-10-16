@@ -554,6 +554,12 @@ static int hoc_config(const struct buffer *kip, size_t *offset, uint32_t *revisi
     return found == 1 && *revision && *revision < 256 && *version && *version < 10000;
 }
 
+static int hoc_revision_compatible(uint32_t source, uint32_t target)
+{
+    /* HOC 2.6.0 retains the revision-6 field layout. */
+    return source == target || (source == 6 && target == 7);
+}
+
 static int installed_payload_matches(const char *root, const char *path,
                                      const struct setup_boot_payload *payload)
 {
@@ -653,8 +659,7 @@ static int recover_hoc(const char *root)
     return r;
 }
 
-static int replace_hoc(const char *root, const struct setup_boot_manifest *manifest,
-                       const struct buffer *loader)
+static int replace_hoc(const char *root, const struct buffer *loader)
 {
     struct buffer current = {0}, check = {0};
     size_t offset;
@@ -665,9 +670,7 @@ static int replace_hoc(const char *root, const struct setup_boot_manifest *manif
     if (r < 0) return 0;
     digest(loader->data, loader->size, hash);
     if (current.size == loader->size && same_hash(&current, hash)) { ok = 1; goto done; }
-    if (!hoc_config(&current, &offset, &revision, &version) ||
-        revision != manifest->hoc_config_revision ||
-        version != manifest->hoc_kip_version) goto done;
+    if (!hoc_config(&current, &offset, &revision, &version)) goto done;
     if (!remove_file(root, HOC_STAGED) || !remove_file(root, HOC_PREVIOUS) ||
         !write_new(root, HOC_STAGED, loader->data, loader->size)) goto done;
     if (!move_file(root, HOC_KIP, HOC_PREVIOUS))
@@ -689,21 +692,6 @@ done:
     return ok;
 }
 
-static int hoc_target_compatible(const char *root, const struct setup_boot_manifest *manifest)
-{
-    struct buffer kip = {0};
-    size_t offset;
-    uint32_t revision, version;
-    int r = read_file(root, HOC_KIP, PAYLOAD_LIMIT, &kip), compatible;
-    if (!r) return 1;
-    if (r < 0) return 0;
-    compatible = hoc_config(&kip, &offset, &revision, &version) &&
-                 revision == manifest->hoc_config_revision &&
-                 version == manifest->hoc_kip_version;
-    free(kip.data);
-    return compatible;
-}
-
 static int probe_hoc_file(const char *root, const char *path, const struct setup_boot_manifest *manifest,
                           struct setup_boot_hoc_info *info)
 {
@@ -714,7 +702,7 @@ static int probe_hoc_file(const char *root, const char *path, const struct setup
     if (!plain_path(path) || strlen(path) >= sizeof(info->path) ||
         read_file(root, path, PAYLOAD_LIMIT, &kip) != 1) return 0;
     if (!hoc_config(&kip, &offset, &revision, &version)) { free(kip.data); return 0; }
-    compatible = manifest && revision == manifest->hoc_config_revision &&
+    compatible = manifest && hoc_revision_compatible(revision, manifest->hoc_config_revision) &&
                  manifest->hoc_config_size >= 12 &&
                  manifest->hoc_config_size <= kip.size - offset;
     if (!*info->path || compatible)
@@ -819,9 +807,9 @@ static int preserve_config(const char *root, const char *path, const struct setu
         offset > loader->size || size > loader->size - offset ||
         read_file(root, path, PAYLOAD_LIMIT, &original) != 1) return 0;
     if (!hoc_config(&original, &source_offset, &revision, &version) ||
-        revision != manifest->hoc_config_revision || size > original.size - source_offset ||
+        !hoc_revision_compatible(revision, manifest->hoc_config_revision) || size > original.size - source_offset ||
         memcmp(loader->data + offset, "CUST", 4) ||
-        get32(loader->data + offset + 4) != revision) goto done;
+        get32(loader->data + offset + 4) != manifest->hoc_config_revision) goto done;
     memcpy(loader->data + offset + 12, original.data + source_offset + 12, size - 12);
     ok = 1;
 done:
@@ -1063,10 +1051,6 @@ enum setup_boot_result setup_boot_install(const char *root, const char *payload_
          manifest->hoc_config_size < 12 ||
          manifest->hoc_config_size > loader.size - hoc_offset))
         FAIL(SETUP_BOOT_INVALID, "Bundled HOC configuration layout does not match its manifest");
-    if (options->loader == SETUP_BOOT_HOC && !hoc_target_compatible(root, manifest))
-        FAIL(SETUP_BOOT_UNSUPPORTED, "Installed HOC loader does not match bundled HOC %u.%u.%u",
-             manifest->hoc_kip_version / 100, manifest->hoc_kip_version / 10 % 10,
-             manifest->hoc_kip_version % 10);
     if (options->preserve_hoc &&
         !preserve_config(root, options->hoc_source, manifest, &loader))
         FAIL(SETUP_BOOT_UNSUPPORTED, "Existing HOC settings are absent or use an incompatible CUST revision");
@@ -1119,7 +1103,7 @@ enum setup_boot_result setup_boot_install(const char *root, const char *payload_
         r = setup_boot_recover(root, detail, detail_size);
         FAIL(r == SETUP_BOOT_RECOVERY ? r : SETUP_BOOT_IO, "Cannot install Atmosphere patch files");
     }
-    if (options->loader == SETUP_BOOT_HOC && !replace_hoc(root, manifest, &loader))
+    if (options->loader == SETUP_BOOT_HOC && !replace_hoc(root, &loader))
     {
         r = setup_boot_recover(root, detail, detail_size);
         FAIL(r == SETUP_BOOT_RECOVERY ? r : SETUP_BOOT_IO, "Cannot replace the HOC loader");

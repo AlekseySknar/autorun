@@ -146,21 +146,22 @@ static void fixture_init(struct fixture *fixture)
     fixture->stock[23] = 1;
     memcpy(fixture->hoc, fixture->stock, sizeof(fixture->stock));
     fixture->hoc[300] = 17;
-    memcpy(fixture->hoc + 512, "CUST\x07\x00\x00\x00\x2c\x01\x00\x00", 12);
+    memcpy(fixture->hoc + 512, "CUST\x07\x00\x00\x00\x04\x01\x00\x00", 12);
     memcpy(fixture->old, fixture->hoc, sizeof(fixture->old));
     fixture->old[300] = 0;
     fixture->old[524] = 42;
     memset(fixture->kernel, 0xaa, sizeof(fixture->kernel));
     memset(fixture->package, 0x44, sizeof(fixture->package));
     fixture->manifest.version = 2;
-    strcpy(fixture->manifest.release, "ams-1.11.2-hoc-2.5.1");
+    strcpy(fixture->manifest.release, "ams-1.12.1-hoc-2.6.0");
+    fixture->manifest.atmosphere_version = UINT32_C(0x010c01);
     fill_payload(&fixture->manifest.stock, fixture->stock, sizeof(fixture->stock));
     fill_payload(&fixture->manifest.hoc, fixture->hoc, sizeof(fixture->hoc));
     fill_payload(&fixture->manifest.mesosphere, fixture->kernel, sizeof(fixture->kernel));
     fixture->manifest.hoc_config_offset = 512;
     fixture->manifest.hoc_config_size = 64;
     fixture->manifest.hoc_config_revision = 7;
-    fixture->manifest.hoc_kip_version = 300;
+    fixture->manifest.hoc_kip_version = 260;
     fill_hoc_code_hash(&fixture->manifest, fixture->hoc, sizeof(fixture->hoc));
     other[16] = 55;
     create_file(fixture->root, SETUP_BOOT_INI, original_ini, strlen(original_ini));
@@ -215,7 +216,7 @@ static void test_validation(void)
     strcpy(f.manifest.release, "../../evil");
     assert(install(&f) == SETUP_BOOT_INVALID);
     no_writes(&f);
-    strcpy(f.manifest.release, "ams-1.11.2-hoc-2.5.1");
+    strcpy(f.manifest.release, "ams-1.12.1-hoc-2.6.0");
     f.manifest.stock.sha256[0] ^= 1;
     assert(install(&f) == SETUP_BOOT_MISSING);
     no_writes(&f);
@@ -321,12 +322,16 @@ static void test_update(int hoc)
     struct buffer before, after;
     unsigned char expected[1024];
     fixture_init(&f);
+    strcpy(f.manifest.release, "ams-1.12.0-hoc-2.6.0");
+    f.manifest.atmosphere_version = UINT32_C(0x010c00);
     f.options.loader = hoc ? SETUP_BOOT_HOC : SETUP_BOOT_STOCK;
     f.options.preserve_hoc = hoc;
     assert(install(&f) == SETUP_BOOT_OK);
     assert(!setup_boot_needs_update(f.root, &f.manifest, NULL));
     assert(read_file(f.root, SETUP_BOOT_INI, INI_LIMIT, &before) == 1);
     refresh_entry(&f);
+    strcpy(f.manifest.release, "ams-1.12.1-hoc-2.6.0");
+    f.manifest.atmosphere_version = UINT32_C(0x010c01);
     f.kernel[0] ^= 1;
     fill_payload(&f.manifest.mesosphere, f.kernel, sizeof(f.kernel));
     replace_file(f.payloads, "mesosphere.bin", f.kernel, sizeof(f.kernel));
@@ -404,10 +409,14 @@ static void test_hoc_rejection(void)
     assert(install(&f) == SETUP_BOOT_INVALID);
     no_writes(&f);
     f.manifest.hoc_config_size = 64;
-    f.old[516] = 6;
+    f.old[516] = 8;
     replace_file(f.root, HOC_KIP, f.old, sizeof(f.old));
     assert(install(&f) == SETUP_BOOT_UNSUPPORTED);
     no_writes(&f);
+    f.options.preserve_hoc = 0;
+    assert(install(&f) == SETUP_BOOT_OK);
+    check_file(f.root, HOC_KIP, f.hoc, sizeof(f.hoc));
+    check_file(f.root, HOC_PREVIOUS, f.old, sizeof(f.old));
     remove_fixture(f.root);
 }
 
@@ -439,8 +448,9 @@ static void test_hoc_probe(void)
     char path[1024];
     fixture_init(&f);
     assert(setup_boot_hoc_probe(f.root, &f.manifest, &info));
-    assert(info.compatible && info.kip_version == 300 &&
+    assert(info.compatible && info.kip_version == 260 &&
            !strcmp(info.path, HOC_KIP));
+    f.old[516] = 6;
     f.old[520] = 0xfb;
     f.old[521] = 0;
     replace_file(f.root, HOC_KIP, f.old, sizeof(f.old));
@@ -449,7 +459,11 @@ static void test_hoc_probe(void)
     f.options.loader = SETUP_BOOT_HOC;
     f.options.preserve_hoc = 1;
     strcpy(f.options.hoc_source, info.path);
-    assert(install(&f) == SETUP_BOOT_UNSUPPORTED);
+    assert(install(&f) == SETUP_BOOT_OK);
+    memcpy(f.hoc + 524, f.old + 524, f.manifest.hoc_config_size - 12);
+    check_file(f.root, HOC_KIP, f.hoc, sizeof(f.hoc));
+    check_file(f.root, HOC_PREVIOUS, f.old, sizeof(f.old));
+    assert(!setup_boot_needs_update(f.root, &f.manifest, NULL));
     remove_fixture(f.root);
 
     fixture_init(&f);

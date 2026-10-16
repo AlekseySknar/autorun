@@ -154,8 +154,6 @@ int launcher_setup_run(struct ui *ui, const struct wine_nx_launcher_options *opt
         const char *notice = NULL;
         int disabled[SETUP_BOOT_MAX_ENTRIES] = {0};
         int count = 1, action = 0, previous = step;
-        int hoc_mismatch = manifest && !strcmp(hoc.path, "atmosphere/kips/hoc.kip") &&
-                           (!hoc.compatible || hoc.kip_version != manifest->hoc_kip_version);
         int items_y = step == STEP_ENTRY ? 378 : 438, row_h = step == STEP_ENTRY ? 50 : 70;
         char dlls_text[160], dlls_status[64];
         int dlls_ready = launcher_dlls_is_ready(dlls), tone;
@@ -201,8 +199,7 @@ int launcher_setup_run(struct ui *ui, const struct wine_nx_launcher_options *opt
         case STEP_OVERCLOCK:
             snprintf(description, sizeof(description), "Choose which overclock settings the patched HOC loader should use. "
                      "It replaces atmosphere/kips/hoc.kip so the HOC overlay can keep editing the active loader.");
-            if (hoc_mismatch) notice = "Installed HOC does not match the bundled version. Update HOC first, or choose the stock loader.";
-            else if (!*hoc.path) notice = "No existing HOC loader found. Bundled defaults will be used.";
+            if (!*hoc.path) notice = "No existing HOC loader found. Bundled defaults will be used.";
             else if (!hoc.compatible) notice = "Existing HOC settings use a different CUST layout and cannot be copied safely.";
             else if (hoc.kip_version != manifest->hoc_kip_version)
             {
@@ -218,8 +215,7 @@ int launcher_setup_run(struct ui *ui, const struct wine_nx_launcher_options *opt
             items[1] = "Use the bundled HOC defaults";
             notes[0] = "Copy your compatible HOC configuration";
             notes[1] = "Start with the supplied configuration";
-            disabled[0] = !hoc.compatible || hoc_mismatch;
-            disabled[1] = hoc_mismatch;
+            disabled[0] = !hoc.compatible;
             count = 2;
             break;
         case STEP_MESOSPHERE:
@@ -320,10 +316,16 @@ int launcher_setup_run(struct ui *ui, const struct wine_nx_launcher_options *opt
             case STEP_ENTRY:
             {
                 int atmosphere_match = running_atmosphere_matches(manifest);
-                if (manifest && atmosphere_match < 0)
-                    ui_message(ui, "Atmosphere version unavailable", "Could not verify the running Atmosphere version. Boot an Atmosphere 1.11.2 entry before installing patches.");
-                else if (manifest && !atmosphere_match)
-                    ui_message(ui, "Atmosphere version mismatch", "The running Atmosphere version is not 1.11.2. Update Atmosphere and reboot first.");
+                if (manifest && atmosphere_match != 1)
+                {
+                    snprintf(detail, sizeof(detail), "%s Boot Atmosphere %u.%u.%u before installing these patches.",
+                             atmosphere_match < 0 ? "Could not verify the running Atmosphere version." :
+                                                    "The running Atmosphere version does not match.",
+                             manifest->atmosphere_version >> 16, (manifest->atmosphere_version >> 8) & 255,
+                             manifest->atmosphere_version & 255);
+                    ui_message(ui, atmosphere_match < 0 ? "Atmosphere version unavailable" :
+                                                        "Atmosphere version mismatch", detail);
+                }
                 else { job.boot.entry = entries[selected]; step = STEP_FINISH; }
                 break;
             }

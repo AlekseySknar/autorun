@@ -8,9 +8,9 @@ import subprocess
 import zipfile
 
 
-ATMOSPHERE_ZIP_SHA256 = "29ce59ae237be59cd20c15fff46cd1f5e127ec2b607e65a3412e396797448649"
-PACKAGE3_SHA256 = "f162a419887374028103e097dc5679f97b3b22501fee667405a3bc965eeaa3f2"
-HOC_ZIP_SHA256 = "48a57eef49032cbae615074676df4a5fb017aff40be3f45734a158d5b19ffa00"
+ATMOSPHERE_ZIP_SHA256 = "f42161b3bce11442ea487eb84811013cf0e5ba571a7964323e206990b341a297"
+PACKAGE3_SHA256 = "94c2e6f7e438571c51964b2d730c6cc7ab5557e19b2fd0315878c004dd8d56a6"
+HOC_ZIP_SHA256 = "aaeff73154ce94e44c3957b4a527027de3cfac971158448837561fa557c49c8e"
 
 
 def digest(data):
@@ -46,14 +46,14 @@ args = parser.parse_args()
 
 archive = args.atmosphere_zip.read_bytes()
 if digest(archive) != ATMOSPHERE_ZIP_SHA256:
-    raise SystemExit("Atmosphere 1.11.2 release archive hash mismatch")
+    raise SystemExit("Atmosphere 1.12.1 release archive hash mismatch")
 with zipfile.ZipFile(args.atmosphere_zip) as z:
     package3 = z.read("atmosphere/package3")
 if digest(package3) != PACKAGE3_SHA256:
-    raise SystemExit("Atmosphere 1.11.2 package3 hash mismatch")
+    raise SystemExit("Atmosphere 1.12.1 package3 hash mismatch")
 hoc_archive = args.hoc_zip.read_bytes()
 if digest(hoc_archive) != HOC_ZIP_SHA256:
-    raise SystemExit("HOC 2.5.1 release archive hash mismatch")
+    raise SystemExit("HOC 2.6.0 release archive hash mismatch")
 with zipfile.ZipFile(args.hoc_zip) as z:
     released_hoc = z.read("atmosphere/kips/hoc.kip")
 
@@ -84,7 +84,7 @@ if config_size < 12 or config_size > len(hoc) - offset:
 released_offset = released_hoc.find(b"CUST", 256)
 if released_offset < 0 or released_hoc.find(b"CUST", released_offset + 4) >= 0 or \
         released_hoc[released_offset:released_offset + config_size] != hoc[offset:offset + config_size]:
-    raise SystemExit("Patched HOC settings layout differs from the 2.5.1 release")
+    raise SystemExit("Patched HOC settings layout differs from the 2.6.0 release")
 hoc_code = bytearray(hoc)
 hoc_code[offset + 12:offset + config_size] = bytes(config_size - 12)
 
@@ -100,8 +100,8 @@ header = """#ifndef WINE_NX_SETUP_BOOT_MANIFEST_H
 #define WINE_NX_SETUP_BOOT_MANIFEST_H
 static const struct setup_boot_manifest setup_boot_release_manifest = {
     .version = 2,
-    .release = "ams-1.11.2-hoc-2.5.1",
-    .atmosphere_version = UINT32_C(0x010b02),
+    .release = "ams-1.12.1-hoc-2.6.0",
+    .atmosphere_version = UINT32_C(0x010c01),
 """
 for field, name in (("stock", "loader-stock.kip"), ("hoc", "loader-hoc.kip"),
                     ("mesosphere", "mesosphere.bin")):
@@ -113,5 +113,5 @@ header += f"    .hoc_config_revision = {revision},\n"
 header += f"    .hoc_kip_version = {version},\n"
 header += "};\n#endif\n"
 (args.output / "setup_boot_manifest.h").write_text(header)
-print(f"Boot bundle: Atmosphere 1.11.2, HOC 2.5.1 KIP version {version}, CUST revision {revision}")
+print(f"Boot bundle: Atmosphere 1.12.1, HOC 2.6.0 KIP version {version}, CUST revision {revision}")
 print(args.output)

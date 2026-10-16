@@ -30,7 +30,7 @@ if (len(loader) < 0x100 or loader[:4] != b'KIP1' or
         0x100 + sum(struct.unpack_from('<I', loader, 0x28 + i * 0x10)[0] for i in range(6)) != len(loader)):
     raise SystemExit('Invalid loader KIP header or segment sizes')
 manifest = {
-    'atmosphere_revision': '5388824be146a89619e8d641acd64599cf1c5f62',
+    'atmosphere_revision': '6b0c077b4c608a3a2ee712b8dc35fee87ceb62e8',
     'program_id': '0548EABB35576000',
     'runtime_build': marker.group(1).decode(),
     'hardware_verified': False,

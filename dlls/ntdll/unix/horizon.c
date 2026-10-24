@@ -2685,6 +2685,18 @@ struct horizon_input_window_request
     unsigned int handle;
 };
 
+struct horizon_set_key_state_request
+{
+    struct horizon_server_request_header header;
+    int async;
+};
+
+#ifndef HORIZON_STANDALONE_SYNTAX
+_Static_assert( HORIZON_REQ_SET_KEY_STATE == REQ_set_key_state &&
+                sizeof(struct horizon_set_key_state_request) == sizeof(struct set_key_state_request),
+                "set_key_state wire layout" );
+#endif
+
 struct horizon_set_foreground_window_request
 {
     struct horizon_server_request_header header;
@@ -9918,6 +9930,47 @@ static int horizon_server_handle_get_key_state( struct horizon_server_connection
     }
     pthread_mutex_unlock( &horizon_server_objects_mutex );
     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
+}
+
+static int horizon_server_handle_set_key_state( struct horizon_server_connection *connection,
+                                                 const unsigned char *message, const void *data,
+                                                 unsigned int data_size )
+{
+    const struct horizon_set_key_state_request *request = (const void *)message;
+    struct horizon_obj_locator desktop_locator;
+    struct horizon_desktop_shm *desktop;
+    struct horizon_input_shm *input;
+    unsigned int status = HORIZON_STATUS_SUCCESS;
+    static unsigned int calls;
+    unsigned int count;
+
+    if (data_size > 256) data_size = 256;
+    pthread_mutex_lock( &horizon_server_objects_mutex );
+    if (calls < UINT_MAX) calls++;
+    count = calls;
+    if (!(input = horizon_server_input_shared_locked( connection->tid )) ||
+        !(desktop = horizon_server_desktop_shared_locked( &desktop_locator )))
+        status = HORIZON_STATUS_INVALID_HANDLE;
+    else
+    {
+        if (data_size) memcpy( input->keystate, data, data_size );
+        /* Preserve explicit synchronous overrides until those desktop keys change. */
+        memcpy( horizon_server_input_state_locked( input )->desktop_keystate, desktop->keystate,
+                sizeof(desktop->keystate) );
+        if (request->async)
+        {
+            if (data_size) memcpy( desktop->keystate, data, data_size );
+            desktop->keystate_serial++;
+            status = horizon_server_flush_session_range_locked( desktop_locator.offset,
+                offsetof( struct horizon_shared_object, shm ) + sizeof(struct horizon_desktop_shm) );
+        }
+        if (!status) status = horizon_server_flush_input_locked( input );
+    }
+    pthread_mutex_unlock( &horizon_server_objects_mutex );
+    if (count <= 16 || status)
+        horizon_trace( "[HZKBD] set_key_state tid=%04x async=%d bytes=%u err=%08x\n",
+                       connection->tid, request->async, data_size, status );
+    return horizon_server_write_status( connection->reply_fd, status );
 }
 
 static int horizon_server_handle_get_thread_input( struct horizon_server_connection *connection,
@@ -17623,6 +17676,9 @@ static void *horizon_server_thread( void *param )
             break;
         case HORIZON_REQ_GET_KEY_STATE:
             status = horizon_server_handle_get_key_state( connection, message );
+            break;
+        case HORIZON_REQ_SET_KEY_STATE:
+            status = horizon_server_handle_set_key_state( connection, message, request_data, header->request_size );
             break;
         default:
         {

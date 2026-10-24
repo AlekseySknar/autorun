@@ -74,6 +74,7 @@
 #endif
 
 #include <errno.h>
+#include <assert.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -617,6 +618,11 @@ struct horizon_fd_queue
 #define HORIZON_REQ_SET_CAPTURE_WINDOW 196
 #define HORIZON_REQ_SET_CARET_WINDOW 197
 #define HORIZON_REQ_SET_CARET_INFO 198
+#define HORIZON_REQ_SET_HOOK 199
+#define HORIZON_REQ_REMOVE_HOOK 200
+#define HORIZON_REQ_START_HOOK_CHAIN 201
+#define HORIZON_REQ_FINISH_HOOK_CHAIN 202
+#define HORIZON_REQ_GET_HOOK_INFO 203
 #define HORIZON_REQ_CREATE_CLASS 204
 #define HORIZON_REQ_SET_CLASS_INFO 206
 #define HORIZON_REQ_SET_WINDOW_FNID 149
@@ -760,6 +766,11 @@ unsigned int horizon_set_process_machine( unsigned short machine )
 #define HORIZON_SESSION_MAPPING_SIZE 0x200000
 #define HORIZON_DESKTOP_ATOM 32769
 #define HORIZON_NTUSER_OBJ_WINDOW 0x01
+#define HORIZON_NTUSER_OBJ_HOOK 0x0f
+#define HORIZON_HOOK_MIN (-1)
+#define HORIZON_HOOK_MAX 14
+#define HORIZON_HOOK_COUNT 17
+#define HORIZON_WINEVENT_INCONTEXT 0x04
 #define HORIZON_NTUSER_DPI_PER_MONITOR_AWARE 0x12
 #define HORIZON_SET_USER_OBJECT_SET_FLAGS 1
 #define HORIZON_WSF_VISIBLE 1
@@ -2801,6 +2812,96 @@ struct horizon_free_user_handle_request
     char __pad_20[4];
 };
 
+struct horizon_set_hook_request
+{
+    struct horizon_server_request_header header;
+    int id;
+    unsigned int pid, tid;
+    int event_min, event_max;
+    unsigned long long proc;
+    int flags, unicode;
+};
+
+struct horizon_set_hook_reply
+{
+    struct horizon_server_reply_header header;
+    unsigned int handle;
+    char pad[4];
+};
+
+struct horizon_remove_hook_request
+{
+    struct horizon_server_request_header header;
+    unsigned int handle;
+    unsigned long long proc;
+    int id;
+    char pad[4];
+};
+
+struct horizon_start_hook_chain_request
+{
+    struct horizon_server_request_header header;
+    int id, event;
+    unsigned int window;
+    int object_id, child_id;
+};
+
+struct horizon_start_hook_chain_reply
+{
+    struct horizon_server_reply_header header;
+    unsigned int handle, pid, tid;
+    int unicode;
+    unsigned long long proc;
+};
+
+struct horizon_finish_hook_chain_request
+{
+    struct horizon_server_request_header header;
+    int id;
+};
+
+struct horizon_get_hook_info_request
+{
+    struct horizon_server_request_header header;
+    unsigned int handle;
+    int get_next, event;
+    unsigned int window;
+    int object_id, child_id;
+    char pad[4];
+};
+
+struct horizon_get_hook_info_reply
+{
+    struct horizon_server_reply_header header;
+    unsigned int handle;
+    int id;
+    unsigned int pid, tid;
+    unsigned long long proc;
+    int unicode;
+    char pad[4];
+};
+
+#ifndef HORIZON_STANDALONE_SYNTAX
+_Static_assert( HORIZON_REQ_SET_HOOK == REQ_set_hook &&
+                HORIZON_REQ_GET_HOOK_INFO == REQ_get_hook_info, "hook protocol opcodes" );
+_Static_assert( sizeof(struct horizon_set_hook_request) == sizeof(struct set_hook_request) &&
+                offsetof(struct horizon_set_hook_request, proc) == offsetof(struct set_hook_request, proc),
+                "set_hook wire layout" );
+_Static_assert( sizeof(struct horizon_set_hook_reply) == sizeof(struct set_hook_reply), "set_hook reply layout" );
+_Static_assert( sizeof(struct horizon_remove_hook_request) == sizeof(struct remove_hook_request) &&
+                offsetof(struct horizon_remove_hook_request, proc) == offsetof(struct remove_hook_request, proc),
+                "remove_hook wire layout" );
+_Static_assert( sizeof(struct horizon_start_hook_chain_request) == sizeof(struct start_hook_chain_request) &&
+                sizeof(struct horizon_start_hook_chain_reply) == sizeof(struct start_hook_chain_reply),
+                "start_hook_chain wire layout" );
+_Static_assert( sizeof(struct horizon_finish_hook_chain_request) == sizeof(struct finish_hook_chain_request),
+                "finish_hook_chain wire layout" );
+_Static_assert( sizeof(struct horizon_get_hook_info_request) == sizeof(struct get_hook_info_request) &&
+                sizeof(struct horizon_get_hook_info_reply) == sizeof(struct get_hook_info_reply) &&
+                offsetof(struct horizon_get_hook_info_reply, proc) == offsetof(struct get_hook_info_reply, proc),
+                "get_hook_info wire layout" );
+#endif
+
 struct horizon_update_window_zorder_request
 {
     struct horizon_server_request_header header;
@@ -3126,7 +3227,7 @@ struct horizon_window_shm
 };
 
 /* queue_shm_t. Its access time stays 0, so win32u always asks get_message
- * instead of trusting the bits to skip it; hooks are not supported. */
+ * instead of trusting the bits to skip it. */
 struct horizon_queue_shm
 {
     long long access_time;
@@ -3135,7 +3236,7 @@ struct horizon_queue_shm
     unsigned int changed_mask;
     unsigned int changed_bits;
     unsigned int internal_bits;
-    int hooks_count[17];
+    int hooks_count[HORIZON_HOOK_COUNT];
 };
 
 union horizon_object_shm
@@ -3280,6 +3381,16 @@ struct horizon_sync_link
     struct horizon_sync_waiter *waiter;
 };
 
+struct horizon_user_hook
+{
+    unsigned int handle, tid;
+    int id, unicode, event_min, event_max, deleted;
+    unsigned long long proc;
+    unsigned char *module;
+    unsigned int module_size, calls;
+    struct horizon_user_hook *next;
+};
+
 struct horizon_server_connection
 {
     int request_fd;
@@ -3351,6 +3462,7 @@ struct horizon_server_object
 #endif
     unsigned int thread_context_count;
     int thread_context_valid;
+    unsigned int hook_chain_depth[HORIZON_HOOK_COUNT];
     struct horizon_user_apc *apc_first, *apc_last;
     unsigned int rootdir;
     unsigned int name_len;
@@ -3517,6 +3629,7 @@ static unsigned int horizon_next_atom = 0xc000;
 static struct horizon_atom_entry *horizon_atoms;
 static struct horizon_user_class *horizon_classes;
 static struct horizon_user_window *horizon_windows;
+static struct horizon_user_hook *horizon_hooks;
 static struct horizon_session_view *horizon_session_views;
 struct horizon_thread_input
 {
@@ -6618,39 +6731,326 @@ static int horizon_server_handle_alloc_user_handle( struct horizon_server_connec
     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
 }
 
+static unsigned int horizon_server_free_user_handle_locked( unsigned short type, unsigned int handle )
+{
+    struct horizon_user_entry *entry = NULL;
+    unsigned int low = handle & 0xffff;
+    unsigned int index = HORIZON_MAX_USER_HANDLES;
+    unsigned long long entry_offset;
+
+    if (low >= HORIZON_FIRST_USER_HANDLE && !((low - HORIZON_FIRST_USER_HANDLE) & 1))
+        index = (low - HORIZON_FIRST_USER_HANDLE) >> 1;
+    if (index < horizon_user_handle_count && horizon_session_data)
+        entry = &((struct horizon_session_shm *)horizon_session_data)->user_entries[index];
+    if (!entry || entry->type != type || entry->generation != (handle >> 16))
+        return HORIZON_STATUS_INVALID_HANDLE;
+    entry->offset = 0;
+    entry->tid = 0;
+    entry->pid = 0;
+    entry->id = 0;
+    entry->uniq = (unsigned int)entry->generation << 16;
+    entry_offset = offsetof( struct horizon_session_shm, user_entries ) + index * sizeof(*entry);
+    return horizon_server_flush_session_range_locked( entry_offset, sizeof(*entry) );
+}
+
 static int horizon_server_handle_free_user_handle( struct horizon_server_connection *connection,
                                                    const unsigned char *message )
 {
     const struct horizon_free_user_handle_request *request = (const void *)message;
     struct horizon_server_reply_header reply;
-    struct horizon_user_entry *entry = NULL;
-    unsigned int low = request->handle & 0xffff;
-    unsigned int index = HORIZON_MAX_USER_HANDLES;
-    unsigned long long entry_offset;
 
     memset( &reply, 0, sizeof(reply) );
     pthread_mutex_lock( &horizon_server_objects_mutex );
-    if (low >= HORIZON_FIRST_USER_HANDLE && !((low - HORIZON_FIRST_USER_HANDLE) & 1))
-        index = (low - HORIZON_FIRST_USER_HANDLE) >> 1;
-    if (index < horizon_user_handle_count && horizon_session_data)
-        entry = &((struct horizon_session_shm *)horizon_session_data)->user_entries[index];
-    if (!entry || entry->type != request->type ||
-        entry->generation != (request->handle >> 16))
-        reply.error = HORIZON_STATUS_INVALID_HANDLE;
-    else
-    {
-        entry->offset = 0;
-        entry->tid = 0;
-        entry->pid = 0;
-        entry->id = 0;
-        entry->uniq = (unsigned int)entry->generation << 16;
-        entry_offset = offsetof( struct horizon_session_shm, user_entries ) + index * sizeof(*entry);
-        reply.error = horizon_server_flush_session_range_locked( entry_offset, sizeof(*entry) );
-    }
+    reply.error = horizon_server_free_user_handle_locked( request->type, request->handle );
     pthread_mutex_unlock( &horizon_server_objects_mutex );
     horizon_trace( "[HZUSER] free_user_handle type=%u hwnd=%08x err=%08x\n",
                    request->type, request->handle, reply.error );
     return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
+}
+
+static int horizon_hook_valid_id( int id )
+{
+    return id >= HORIZON_HOOK_MIN && id <= HORIZON_HOOK_MAX;
+}
+
+static unsigned int horizon_server_publish_hook_count_locked( unsigned int tid, int id )
+{
+    struct horizon_msgq *queue = horizon_msgq_find( &horizon_msg_queues, tid );
+    struct horizon_shared_object *shared;
+    struct horizon_obj_locator locator;
+    struct horizon_user_hook *hook;
+    unsigned int count = 0;
+    int index = id - HORIZON_HOOK_MIN;
+
+    assert( horizon_hook_valid_id( id ) );
+    if (!queue) return HORIZON_STATUS_INVALID_HANDLE;
+    locator.id = queue->shm_id;
+    locator.offset = queue->shm_offset;
+    if (!(shared = horizon_server_shared_object_locked( locator )) || shared->id != locator.id)
+        return HORIZON_STATUS_INVALID_HANDLE;
+    for (hook = horizon_hooks; hook; hook = hook->next)
+        if (hook->tid == tid && hook->id == id && !hook->deleted) count++;
+    shared->shm.queue.hooks_count[index] = count;
+    return horizon_server_flush_session_range_locked(
+        locator.offset + offsetof( struct horizon_shared_object, shm ) +
+        offsetof( struct horizon_queue_shm, hooks_count ) + index * sizeof(int), sizeof(int) );
+}
+
+static unsigned int horizon_server_free_hook_locked( struct horizon_user_hook **link )
+{
+    struct horizon_user_hook *hook = *link;
+    unsigned int status = horizon_server_free_user_handle_locked( HORIZON_NTUSER_OBJ_HOOK, hook->handle );
+
+    *link = hook->next;
+    horizon_trace( "[HZHOOK] free tid=%04x id=%d handle=%08x deliveries=%u err=%08x\n",
+                   hook->tid, hook->id, hook->handle, hook->calls, status );
+    free( hook->module );
+    free( hook );
+    return status;
+}
+
+static void horizon_server_remove_thread_hooks_locked( unsigned int tid )
+{
+    struct horizon_user_hook **link = &horizon_hooks;
+
+    while (*link)
+        if ((*link)->tid == tid) horizon_server_free_hook_locked( link );
+        else link = &(*link)->next;
+}
+
+static struct horizon_user_hook *horizon_server_next_hook_locked( struct horizon_user_hook *hook,
+                                                                  unsigned int tid, int id, int event )
+{
+    for (; hook; hook = hook->next)
+        if (!hook->deleted && hook->tid == tid && hook->id == id &&
+            event >= hook->event_min && event <= hook->event_max)
+            return hook;
+    return NULL;
+}
+
+/* Replies outlive the object lock, so never expose a removable hook's storage. */
+static unsigned int horizon_server_copy_hook_module_locked( const struct horizon_user_hook *hook,
+                                                             unsigned int limit, void **data,
+                                                             unsigned int *size )
+{
+    *size = (hook->module_size < limit ? hook->module_size : limit) & ~1u;
+    if (!*size) return HORIZON_STATUS_SUCCESS;
+    if (!(*data = malloc( *size )))
+    {
+        *size = 0;
+        return HORIZON_STATUS_NO_MEMORY;
+    }
+    memcpy( *data, hook->module, *size );
+    return HORIZON_STATUS_SUCCESS;
+}
+
+static void horizon_server_note_hook_delivery_locked( struct horizon_user_hook *hook )
+{
+    if (hook->calls < UINT_MAX) hook->calls++;
+    if (hook->calls <= 16)
+        horizon_trace( "[HZHOOK] deliver tid=%04x id=%d handle=%08x proc=%llx count=%u\n",
+                       hook->tid, hook->id, hook->handle, hook->proc, hook->calls );
+}
+
+static int horizon_server_handle_set_hook( struct horizon_server_connection *connection,
+                                           const unsigned char *message, const void *data,
+                                           unsigned int data_size )
+{
+    const struct horizon_set_hook_request *request = (const void *)message;
+    struct horizon_set_hook_reply reply = {0};
+    struct horizon_server_object *thread;
+    struct horizon_user_hook *hook = NULL;
+    struct horizon_obj_locator locator = {0};
+
+    pthread_mutex_lock( &horizon_server_objects_mutex );
+    if (!request->proc || !horizon_hook_valid_id( request->id ) ||
+        request->event_min > request->event_max || (data_size & 1) || data_size > 0xfffe)
+        reply.header.error = HORIZON_STATUS_INVALID_PARAMETER;
+    /* Only thread-local in-context hooks have a callback delivery path here. */
+    else if (!request->tid || request->id == 0 || request->id == 1 || request->id == 6 ||
+             request->id == 8 || request->id >= 13 || request->flags != HORIZON_WINEVENT_INCONTEXT ||
+             (request->pid && request->pid != connection->pid))
+        reply.header.error = HORIZON_STATUS_NOT_SUPPORTED;
+    else
+    {
+        for (thread = horizon_server_threads; thread; thread = thread->thread_next)
+            if (thread->thread.tid == request->tid && thread->thread.pid == connection->pid &&
+                !thread->thread.terminated) break;
+        if (!thread) reply.header.error = HORIZON_STATUS_INVALID_CID;
+        else if (!horizon_server_queue_locked( request->tid ) || !(hook = calloc( 1, sizeof(*hook) )))
+            reply.header.error = HORIZON_STATUS_NO_MEMORY;
+        else
+        {
+            hook->tid = request->tid;
+            hook->id = request->id;
+            hook->proc = request->proc;
+            hook->unicode = !!request->unicode;
+            hook->event_min = request->event_min;
+            hook->event_max = request->event_max;
+            hook->module_size = data_size;
+            if (data_size && !(hook->module = malloc( data_size )))
+                reply.header.error = HORIZON_STATUS_NO_MEMORY;
+            else
+            {
+                if (data_size) memcpy( hook->module, data, data_size );
+                reply.header.error = horizon_server_alloc_user_handle_locked( HORIZON_NTUSER_OBJ_HOOK,
+                    locator, connection->pid, request->tid, &hook->handle );
+                if (!reply.header.error)
+                {
+                    hook->next = horizon_hooks;
+                    horizon_hooks = hook;
+                    reply.header.error = horizon_server_publish_hook_count_locked( hook->tid, hook->id );
+                    if (reply.header.error) horizon_hooks = hook->next;
+                    else reply.handle = hook->handle;
+                }
+            }
+        }
+    }
+    if (reply.header.error && hook)
+    {
+        if (hook->handle) horizon_server_free_user_handle_locked( HORIZON_NTUSER_OBJ_HOOK, hook->handle );
+        free( hook->module );
+        free( hook );
+    }
+    pthread_mutex_unlock( &horizon_server_objects_mutex );
+    horizon_trace( "[HZHOOK] set caller=%04x tid=%04x id=%d proc=%llx module_bytes=%u handle=%08x err=%08x\n",
+                   connection->tid, request->tid, request->id, request->proc, data_size,
+                   reply.handle, reply.header.error );
+    return horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), NULL, 0 );
+}
+
+static int horizon_server_handle_remove_hook( struct horizon_server_connection *connection,
+                                              const unsigned char *message )
+{
+    const struct horizon_remove_hook_request *request = (const void *)message;
+    struct horizon_user_hook **link = &horizon_hooks, *hook;
+    unsigned int status = HORIZON_STATUS_INVALID_HANDLE;
+
+    pthread_mutex_lock( &horizon_server_objects_mutex );
+    while ((hook = *link))
+    {
+        if (!hook->deleted && (request->handle ? hook->handle == request->handle :
+            hook->tid == connection->tid && hook->id == request->id && hook->proc == request->proc))
+            break;
+        link = &hook->next;
+    }
+    if (hook)
+    {
+        struct horizon_server_object *thread;
+        for (thread = horizon_server_threads; thread; thread = thread->thread_next)
+            if (thread->thread.tid == hook->tid && thread->thread.pid == connection->pid) break;
+        if (thread)
+        {
+            hook->deleted = 1;
+            status = horizon_server_publish_hook_count_locked( hook->tid, hook->id );
+            if (!thread->hook_chain_depth[hook->id - HORIZON_HOOK_MIN])
+            {
+                unsigned int freed = horizon_server_free_hook_locked( link );
+                if (!status) status = freed;
+            }
+        }
+    }
+    pthread_mutex_unlock( &horizon_server_objects_mutex );
+    horizon_trace( "[HZHOOK] remove tid=%04x handle=%08x id=%d err=%08x\n",
+                   connection->tid, request->handle, request->id, status );
+    return horizon_server_write_status( connection->reply_fd, status );
+}
+
+static int horizon_server_handle_start_hook_chain( struct horizon_server_connection *connection,
+                                                   const unsigned char *message )
+{
+    const struct horizon_start_hook_chain_request *request = (const void *)message;
+    struct horizon_start_hook_chain_reply reply = {0};
+    struct horizon_user_hook *hook;
+    void *module = NULL;
+    unsigned int size = 0;
+    int ret;
+
+    pthread_mutex_lock( &horizon_server_objects_mutex );
+    if (!horizon_hook_valid_id( request->id )) reply.header.error = HORIZON_STATUS_INVALID_PARAMETER;
+    else if ((hook = horizon_server_next_hook_locked( horizon_hooks, connection->tid, request->id, request->event )))
+    {
+        if (!connection->thread) reply.header.error = HORIZON_STATUS_INVALID_HANDLE;
+        else if (connection->thread->hook_chain_depth[request->id - HORIZON_HOOK_MIN] == UINT_MAX)
+            reply.header.error = HORIZON_STATUS_INVALID_PARAMETER;
+        else if (!(reply.header.error = horizon_server_copy_hook_module_locked( hook, request->header.reply_size,
+                                                                               &module, &size )))
+        {
+            connection->thread->hook_chain_depth[request->id - HORIZON_HOOK_MIN]++;
+            reply.handle = hook->handle;
+            reply.proc = hook->proc;
+            reply.unicode = hook->unicode;
+            horizon_server_note_hook_delivery_locked( hook );
+        }
+    }
+    pthread_mutex_unlock( &horizon_server_objects_mutex );
+    reply.header.reply_size = size;
+    ret = horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), module, size );
+    free( module );
+    return ret;
+}
+
+static int horizon_server_handle_get_hook_info( struct horizon_server_connection *connection,
+                                                const unsigned char *message )
+{
+    const struct horizon_get_hook_info_request *request = (const void *)message;
+    struct horizon_get_hook_info_reply reply = {0};
+    struct horizon_user_hook *hook;
+    void *module = NULL;
+    unsigned int size = 0;
+    int ret;
+
+    pthread_mutex_lock( &horizon_server_objects_mutex );
+    for (hook = horizon_hooks; hook; hook = hook->next)
+        if (hook->handle == request->handle) break;
+    if (!hook || hook->tid != connection->tid || !connection->thread ||
+        !connection->thread->hook_chain_depth[hook->id - HORIZON_HOOK_MIN])
+        reply.header.error = HORIZON_STATUS_INVALID_HANDLE;
+    else
+    {
+        if (request->get_next)
+            hook = horizon_server_next_hook_locked( hook->next, connection->tid, hook->id, request->event );
+        if (hook && !(reply.header.error = horizon_server_copy_hook_module_locked( hook, request->header.reply_size,
+                                                                                 &module, &size )))
+        {
+            reply.handle = hook->handle;
+            reply.id = hook->id;
+            reply.proc = hook->deleted ? 0 : hook->proc;
+            reply.unicode = hook->unicode;
+            if (reply.proc) horizon_server_note_hook_delivery_locked( hook );
+        }
+    }
+    pthread_mutex_unlock( &horizon_server_objects_mutex );
+    reply.header.reply_size = size;
+    ret = horizon_server_write_reply( connection->reply_fd, &reply, sizeof(reply), module, size );
+    free( module );
+    return ret;
+}
+
+static int horizon_server_handle_finish_hook_chain( struct horizon_server_connection *connection,
+                                                    const unsigned char *message )
+{
+    const struct horizon_finish_hook_chain_request *request = (const void *)message;
+    struct horizon_user_hook **link = &horizon_hooks;
+    unsigned int status = HORIZON_STATUS_SUCCESS;
+
+    pthread_mutex_lock( &horizon_server_objects_mutex );
+    if (!horizon_hook_valid_id( request->id ) || !connection->thread ||
+        !connection->thread->hook_chain_depth[request->id - HORIZON_HOOK_MIN])
+        status = HORIZON_STATUS_INVALID_PARAMETER;
+    else if (!--connection->thread->hook_chain_depth[request->id - HORIZON_HOOK_MIN])
+    {
+        /* A removed callback stays addressable until its outermost chain ends. */
+        while (*link)
+            if ((*link)->tid == connection->tid && (*link)->id == request->id && (*link)->deleted)
+            {
+                unsigned int freed = horizon_server_free_hook_locked( link );
+                if (!status) status = freed;
+            }
+            else link = &(*link)->next;
+    }
+    pthread_mutex_unlock( &horizon_server_objects_mutex );
+    return horizon_server_write_status( connection->reply_fd, status );
 }
 
 static struct horizon_user_window *horizon_server_find_window_locked( unsigned int handle )
@@ -6884,6 +7284,7 @@ static void horizon_server_end_thread_locked( struct horizon_server_connection *
         horizon_server_running_threads--;
     horizon_message_queue_drop( &horizon_posted_messages, thread->thread.tid, 0 );
     horizon_win_timers_drop( &horizon_timers, thread->thread.tid, 0 );
+    horizon_server_remove_thread_hooks_locked( thread->thread.tid );
     if (horizon_clip_thread_ended( &horizon_clipboard, thread->thread.tid )) horizon_server_clipboard_notify_locked();
     horizon_server_destroy_queue_locked( thread->thread.tid );
     for (entry = horizon_server_handles; entry; entry = entry->next)
@@ -17187,6 +17588,21 @@ static void *horizon_server_thread( void *param )
             break;
         case HORIZON_REQ_SET_WINDOW_FNID:
             status = horizon_server_handle_set_window_fnid( connection, message );
+            break;
+        case HORIZON_REQ_SET_HOOK:
+            status = horizon_server_handle_set_hook( connection, message, request_data, header->request_size );
+            break;
+        case HORIZON_REQ_REMOVE_HOOK:
+            status = horizon_server_handle_remove_hook( connection, message );
+            break;
+        case HORIZON_REQ_START_HOOK_CHAIN:
+            status = horizon_server_handle_start_hook_chain( connection, message );
+            break;
+        case HORIZON_REQ_FINISH_HOOK_CHAIN:
+            status = horizon_server_handle_finish_hook_chain( connection, message );
+            break;
+        case HORIZON_REQ_GET_HOOK_INFO:
+            status = horizon_server_handle_get_hook_info( connection, message );
             break;
         case HORIZON_REQ_CREATE_CLASS:
             status = horizon_server_handle_create_class( connection, message, request_data,

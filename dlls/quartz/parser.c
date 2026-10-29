@@ -32,7 +32,12 @@ HRESULT avi_splitter_create(IUnknown *outer, IUnknown **out)
 HRESULT mpeg1_splitter_create(IUnknown *outer, IUnknown **out)
 {
     static const GUID CLSID_wg_mpeg1_splitter = {0xa8edbf98,0x2442,0x42c5,{0x85,0xa1,0xab,0x05,0xa5,0x80,0xdf,0x53}};
-    return CoCreateInstance(&CLSID_wg_mpeg1_splitter, outer, CLSCTX_INPROC_SERVER, &IID_IUnknown, (void **)out);
+    HRESULT hr;
+
+    if (SUCCEEDED(hr = CoCreateInstance(&CLSID_wg_mpeg1_splitter, outer, CLSCTX_INPROC_SERVER, &IID_IUnknown, (void **)out)))
+        return hr;
+    /* Without winegstreamer, read MPEG audio files ourselves. */
+    return native_mpeg_audio_splitter_create(outer, out);
 }
 
 HRESULT wave_parser_create(IUnknown *outer, IUnknown **out)

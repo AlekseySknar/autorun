@@ -33,6 +33,7 @@ jobs:
         run: |
           grep -q "HORIZON_REQ_SET_HOOK 199" dlls/ntdll/unix/horizon.c
           grep -q "horizon_server_handle_set_key_state" dlls/ntdll/unix/horizon.c
+          grep -q "native_mpeg_audio_splitter_create" dlls/quartz/parser.c
 
       - name: Tools
         run: |
@@ -67,10 +68,25 @@ jobs:
           ls -l horizon-wine/build-autorun 2>/dev/null || echo "(none)"
           tail -n 60 build.log 2>/dev/null || echo "(no build.log)"
 
+      # The archive carries no Windows DLLs; the ones changed here are built
+      # from the PE tree build.sh configured, for copying over syswow64's.
+      - name: Build changed 32-bit DLLs
+        shell: bash
+        run: |
+          set -o pipefail
+          export PATH="$PWD/horizon-wine/toolchains/llvm-mingw-20260505-ucrt-ubuntu-22.04-x86_64/bin:$PATH"
+          make -C horizon-wine/build-wine-amd64-pe -j4 dlls/quartz/i386-windows/quartz.dll 2>&1 | tee dlls.log | tail -n 40
+          mkdir -p "$RUNNER_TEMP/art/syswow64"
+          i686-w64-mingw32-strip -o "$RUNNER_TEMP/art/syswow64/quartz.dll" \
+              horizon-wine/build-wine-amd64-pe/dlls/quartz/i386-windows/quartz.dll
+
       - name: Stage the package
         if: always()
         run: |
           mkdir -p "$RUNNER_TEMP/art"
+          (cd "$RUNNER_TEMP/art" && [ -f syswow64/quartz.dll ] && mv syswow64/quartz.dll quartz-i386.dll) || true
+          rmdir "$RUNNER_TEMP/art/syswow64" 2>/dev/null || true
+          gzip -c dlls.log > "$RUNNER_TEMP/art/dlls.log.gz" 2>/dev/null || true
           cp -v horizon-wine/build-autorun/*.zip "$RUNNER_TEMP/art/" 2>/dev/null || true
           gzip -c build.log > "$RUNNER_TEMP/art/build.log.gz" 2>/dev/null || true
           (cd "$RUNNER_TEMP/art" && sha256sum * > SHA256SUMS) || true

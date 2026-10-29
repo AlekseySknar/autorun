@@ -18,6 +18,7 @@ SOURCES = \
 	filtermapper.c \
 	main.c \
 	memallocator.c \
+	mpegsplit.c \
 	parser.c \
 	passthrough.c \
 	quartz.rc \

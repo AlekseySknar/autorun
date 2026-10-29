@@ -1,0 +1,89 @@
+name: build-autorun
+
+# Autorun with Horizon's Windows hook chains (SetWindowsHookEx), which MFC
+# programs need to create their windows. Each run publishes the SD-card
+# archive as a release named after the run.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ hard-truck-hooks ]
+    paths-ignore: [ '**.md' ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo apt-get clean
+          df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Fail fast if the hook patch is missing
+        run: |
+          grep -q "HORIZON_REQ_SET_HOOK 199" dlls/ntdll/unix/horizon.c
+          grep -q "horizon_server_handle_set_key_state" dlls/ntdll/unix/horizon.c
+
+      - name: Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make bison python3 curl unzip
+
+      # package-autorun.py hardcodes the author's macOS llvm-mingw directory.
+      - name: Alias the llvm-mingw toolchain name
+        run: |
+          mkdir -p horizon-wine/toolchains
+          cd horizon-wine/toolchains
+          ln -sfn llvm-mingw-20260505-ucrt-ubuntu-22.04-x86_64 \
+                  llvm-mingw-20260505-ucrt-macos-universal
+
+      # The build container runs as root, so the tree must be root-owned while
+      # it runs; the tree is handed back to the runner user afterwards.
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          sudo chown -R root:root .
+          sudo git config --global --add safe.directory '*'
+          rc=0
+          sudo sh build.sh --jobs 4 2>&1 | sudo tee build.log > /dev/null || rc=$?
+          sudo chown -R "$(id -u):$(id -g)" .
+          echo "build.sh exit code: $rc"
+          exit $rc
+
+      - name: Show what was produced
+        if: always()
+        run: |
+          ls -l horizon-wine/build-autorun 2>/dev/null || echo "(none)"
+          tail -n 60 build.log 2>/dev/null || echo "(no build.log)"
+
+      - name: Stage the package
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/art"
+          cp -v horizon-wine/build-autorun/*.zip "$RUNNER_TEMP/art/" 2>/dev/null || true
+          gzip -c build.log > "$RUNNER_TEMP/art/build.log.gz" 2>/dev/null || true
+          (cd "$RUNNER_TEMP/art" && sha256sum * > SHA256SUMS) || true
+          ls -l "$RUNNER_TEMP/art"
+
+      - name: Publish the release
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="hooks-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" "$RUNNER_TEMP"/art/* \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Autorun + hooks, run ${GITHUB_RUN_NUMBER}" \
+            --notes "Upstream main $(git rev-parse --short HEAD^ 2>/dev/null || echo '?') with Horizon Windows hook chains. Build: ${{ job.status }}." \
+            --prerelease

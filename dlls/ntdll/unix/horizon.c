@@ -6803,9 +6803,9 @@ static unsigned int horizon_server_publish_hook_count_locked( unsigned int tid, 
     for (hook = horizon_hooks; hook; hook = hook->next)
         if (hook->tid == tid && hook->id == id && !hook->deleted) count++;
     shared->shm.queue.hooks_count[index] = count;
+    /* Shared objects are flushed whole, from their header, so views see the new seq. */
     return horizon_server_flush_session_range_locked(
-        locator.offset + offsetof( struct horizon_shared_object, shm ) +
-        offsetof( struct horizon_queue_shm, hooks_count ) + index * sizeof(int), sizeof(int) );
+        locator.offset, offsetof( struct horizon_shared_object, shm ) + sizeof(struct horizon_queue_shm) );
 }
 
 static unsigned int horizon_server_free_hook_locked( struct horizon_user_hook **link )

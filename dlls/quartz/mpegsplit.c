@@ -41,6 +41,9 @@ static const GUID fourcc_subtype = {0x00000000, 0x0000, 0x0010, {0x80, 0x00, 0x0
 #define MPEG_MAX_JUNK (64 * 1024)
 /* Frames that must follow each other for the start to count as audio. */
 #define MPEG_SYNC_FRAMES 3
+/* How much audio a sample holds at most, in 100 ns units, and in bytes. */
+#define MPEG_SAMPLE_TIME (100 * 10000)
+#define MPEG_MAX_SAMPLE_SIZE (64 * 1024)
 
 struct mpeg_header
 {
@@ -255,6 +258,35 @@ static HRESULT index_frames(struct mpeg_splitter *filter, size_t size, size_t po
     return filter->frame_count ? S_OK : VFW_E_INVALID_FILE_FORMAT;
 }
 
+/* Joins frames that follow each other in the file into samples of about
+ * MPEG_SAMPLE_TIME, as the AVI splitter's chunks are, rather than handing the
+ * decoder and the renderer a sample every 26 ms. */
+static void join_frames(struct mpeg_splitter *filter)
+{
+    size_t i, count = 0;
+
+    for (i = 0; i < filter->frame_count; ++i)
+    {
+        const struct mpeg_frame *frame = &filter->frames[i];
+        struct mpeg_frame *last = count ? &filter->frames[count - 1] : NULL;
+
+        if (last && last->offset + last->size == frame->offset && frame->end - last->start <= MPEG_SAMPLE_TIME
+                && last->size + frame->size <= MPEG_MAX_SAMPLE_SIZE)
+        {
+            last->size += frame->size;
+            last->end = frame->end;
+        }
+        else
+        {
+            filter->frames[count++] = *frame;
+        }
+    }
+    filter->frame_count = count;
+    filter->max_frame_size = 0;
+    for (i = 0; i < count; ++i)
+        filter->max_frame_size = max(filter->max_frame_size, filter->frames[i].size);
+}
+
 /* WAVE_FORMAT_MPEGLAYER3 for layer III, which l3codeca.acm wants with its
  * extra fields; WAVE_FORMAT_MPEG with MPEG1WAVEFORMAT for layers I and II. */
 static HRESULT init_media_type(struct mpeg_splitter *filter, const struct mpeg_header *h)
@@ -406,6 +438,7 @@ static HRESULT mpeg_sink_connect(struct strmbase_sink *iface, IPin *peer, const 
     if (FAILED(hr = index_frames(filter, size, pos, &first))
             || FAILED(hr = init_media_type(filter, &first)))
         goto fail;
+    join_frames(filter);
 
     strmbase_source_init(&filter->source, &filter->filter, L"Audio", &source_ops);
     strmbase_seeking_init(&filter->seek, &seeking_vtbl, mpeg_change_stop, mpeg_change_current, mpeg_change_rate);
